@@ -406,7 +406,7 @@ export function makePuzzle(values, previous = null) {
     sequenceLocked: Boolean(oldPublic.sequenceLocked),
     participationMode,
     allowedPlayerIds: participationMode === 'controlled' ? allowedPlayerIds : [],
-    playerProgress: oldPublic.playerProgress && typeof oldPublic.playerProgress === 'object' ? oldPublic.playerProgress : {},
+    playerProgress: participationMode === 'individual' && oldPublic.playerProgress && typeof oldPublic.playerProgress === 'object' ? oldPublic.playerProgress : {},
     updatedAt: Date.now(),
   };
 
