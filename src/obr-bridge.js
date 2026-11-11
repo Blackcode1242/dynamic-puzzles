@@ -78,7 +78,7 @@ export async function connectToOwlbear(callbacks = {}) {
     if (!message || typeof message !== 'object') return;
     const sender = partyPlayers.find((player) => player.connectionId && player.connectionId === event.connectionId);
     const senderId = sender?.id || null;
-    const senderName = sender?.name || String(message.playerName || 'Jogador').slice(0, 48);
+    const senderName = sender?.name || `Jogador ${(event.connectionId || '').slice(0, 6)}`;
 
     if (currentRole === 'GM' && message.type === 'attempt' && handlers.onAttempt) {
       handlers.onAttempt({
