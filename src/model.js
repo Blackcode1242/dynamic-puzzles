@@ -386,11 +386,11 @@ export function makePuzzle(values, previous = null) {
   } else if (type === 'runes') {
     const gridSize = Math.max(2, Math.min(5, Number(values.runeGridSize) || 3));
     const symbols = [...new Set(String(values.runeSymbols || 'ᚠ ᚢ ᚦ ᚨ')
-      .split(/[\\s,;]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 20);
+      .split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 20);
     if (symbols.length < 2) throw new Error('Adicione pelo menos duas runas disponíveis.');
     const runes = symbols.map((symbol, index) => ({ id: `rune-${index}`, symbol }));
     const placements = String(values.runePattern || '')
-      .split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
       .map((line) => {
         const [symbol = '', positionText = '', rotationText = '0'] = line.split('|').map((part) => part.trim());
         const rune = runes.find((item) => item.symbol === symbol);
