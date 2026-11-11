@@ -1,4 +1,3 @@
-
 export const PUZZLE_TYPES = [
   { id: 'lock', label: 'Cadeado', description: 'Código numérico ou alfabético' },
   { id: 'terminal', label: 'Terminal', description: 'Usuário, senha e comandos' },
