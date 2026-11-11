@@ -1,7 +1,9 @@
+
 export const PUZZLE_TYPES = [
   { id: 'lock', label: 'Cadeado', description: 'Código numérico ou alfabético' },
   { id: 'terminal', label: 'Terminal', description: 'Usuário, senha e comandos' },
   { id: 'cipher', label: 'Cifra', description: 'Texto cifrado e decodificação' },
+  { id: 'frequency', label: 'Sintonia de frequência', description: 'Ajuste um receptor para encontrar uma transmissão' },
   { id: 'sequence', label: 'Sequência de símbolos', description: 'Descubra a ordem correta' },
   { id: 'wires', label: 'Fios coloridos', description: 'Escolha o fio correto' },
   { id: 'document', label: 'Documento rasgado', description: 'Reconstrua os fragmentos' },
@@ -17,13 +19,13 @@ export const ERROR_EFFECTS = [
 ];
 
 export const DEFAULT_SYMBOLS = ['◆', '●', '▲', '■', '✦', '☾'];
+
 export const DEFAULT_WIRES = [
   { id: 'red', label: 'Vermelho', color: '#f87171' },
   { id: 'blue', label: 'Azul', color: '#60a5fa' },
   { id: 'yellow', label: 'Amarelo', color: '#facc15' },
   { id: 'green', label: 'Verde', color: '#4ade80' },
 ];
-
 
 // Modelos de partida: cada tipo possui um exemplo pronto que pode ser editado.
 export const PUZZLE_TEMPLATES = [
@@ -56,6 +58,36 @@ export const PUZZLE_TEMPLATES = [
     description: 'Mensagem codificada que precisa ser decifrada.',
     preview: 'FKDYH HVWD QR DUPDULR',
     draft: { type: 'cipher', title: 'Mensagem interceptada', description: 'Uma mensagem foi cifrada antes de chegar ao grupo.', instructions: 'A cifra é de César. O deslocamento é +3.', cipherText: 'FKDYH HVWD QR DUPDULR', cipherMethod: 'caesar', shift: 3, answer: 'CHAVE ESTA NO ARMARIO', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Mensagem decifrada', rewardContent: 'A chave está no armário.', hints: 'Cada letra foi deslocada no alfabeto.\nExperimente voltar três posições.\nA mensagem diz: CHAVE ESTA NO ARMARIO.' }
+  },
+  {
+    id: 'frequency', type: 'frequency', label: 'Sintonia de frequência', difficulty: 'Médio',
+    description: 'Encontre uma transmissão ajustando os controles de um receptor.',
+    preview: 'FM // 101,7 MHz · SINAL ???',
+    draft: {
+      type: 'frequency',
+      title: 'Transmissão desconhecida',
+      description: 'Um receptor está captando ruídos e fragmentos de uma transmissão.',
+      instructions: 'Encontre o canal correto e ajuste a frequência até estabilizar o sinal.',
+      frequencyMin: '88',
+      frequencyMax: '108',
+      frequencyStep: '0.1',
+      frequencyTarget: '101.7',
+      frequencyTolerance: '0.5',
+      frequencyChannels: 'AM, FM, Emergência',
+      frequencyTargetChannel: 'FM',
+      frequencyUseAmplitude: 'no',
+      frequencyAmplitudeMin: '0',
+      frequencyAmplitudeMax: '100',
+      frequencyAmplitudeStep: '1',
+      frequencyAmplitudeTarget: '65',
+      frequencyAmplitudeTolerance: '5',
+      frequencyInterference: 'low',
+      attemptLimit: 6,
+      errorEffect: 'clock',
+      rewardTitle: 'Transmissão encontrada',
+      rewardContent: 'A mensagem começa a ser reproduzida: “A entrada está atrás do antigo observatório.”',
+      hints: 'O canal correto está entre as opções disponíveis.\nProcure uma frequência próxima de 102 MHz.\nA transmissão está em 101,7 MHz, no canal FM.'
+    }
   },
   {
     id: 'sequence', type: 'sequence', label: 'Sequência de símbolos', difficulty: 'Médio',
@@ -127,7 +159,103 @@ export function makePuzzle(values, previous = null) {
   let secret = {};
   let config = {};
 
-  if (type === 'lock') {
+  if (type === 'frequency') {
+    const readNumber = (value, fallback) => {
+      if (value === undefined || value === null || String(value).trim() === '') {
+        return fallback;
+      }
+      return Number(value);
+    };
+
+    const frequencyMin = readNumber(values.frequencyMin, 88);
+    const frequencyMax = readNumber(values.frequencyMax, 108);
+    const frequencyStep = readNumber(values.frequencyStep, 0.1);
+    const targetFrequency = readNumber(values.frequencyTarget, 101.7);
+    const frequencyTolerance = readNumber(values.frequencyTolerance, 0.5);
+
+    if (![frequencyMin, frequencyMax, frequencyStep, targetFrequency, frequencyTolerance].every(Number.isFinite)) {
+      throw new Error('Os valores de frequência precisam ser números válidos.');
+    }
+    if (frequencyMax <= frequencyMin || frequencyStep <= 0 || frequencyStep > frequencyMax - frequencyMin) {
+      throw new Error('A faixa de frequência ou o intervalo de ajuste é inválido.');
+    }
+    if (targetFrequency < frequencyMin || targetFrequency > frequencyMax) {
+      throw new Error('A frequência secreta precisa estar dentro da faixa configurada.');
+    }
+    if (frequencyTolerance < 0 || frequencyTolerance > frequencyMax - frequencyMin) {
+      throw new Error('A tolerância de frequência é inválida.');
+    }
+
+    const channelLabels = String(values.frequencyChannels || 'AM, FM, Emergência')
+      .split(/[\n,;]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+
+    if (!channelLabels.length) {
+      throw new Error('Configure pelo menos um canal.');
+    }
+
+    const channels = channelLabels.map((label, index) => ({
+      id: `channel-${index}`,
+      label,
+    }));
+
+    const targetChannelLabel = String(values.frequencyTargetChannel || channels[0].label);
+    const targetChannel = channels.find(
+      (channel) => normalize(channel.label) === normalize(targetChannelLabel)
+    );
+
+    if (!targetChannel) {
+      throw new Error('O canal secreto precisa corresponder a um dos canais disponíveis.');
+    }
+
+    const useAmplitude = ['yes', 'true', true, 1].includes(values.frequencyUseAmplitude);
+
+    const amplitudeMin = readNumber(values.frequencyAmplitudeMin, 0);
+    const amplitudeMax = readNumber(values.frequencyAmplitudeMax, 100);
+    const amplitudeStep = readNumber(values.frequencyAmplitudeStep, 1);
+    const targetAmplitude = readNumber(values.frequencyAmplitudeTarget, 65);
+    const amplitudeTolerance = readNumber(values.frequencyAmplitudeTolerance, 5);
+
+    if (![amplitudeMin, amplitudeMax, amplitudeStep, targetAmplitude, amplitudeTolerance].every(Number.isFinite)) {
+      throw new Error('Os valores de amplitude precisam ser números válidos.');
+    }
+    if (amplitudeMax <= amplitudeMin || amplitudeStep <= 0 || amplitudeStep > amplitudeMax - amplitudeMin) {
+      throw new Error('A faixa de amplitude ou o intervalo de ajuste é inválido.');
+    }
+    if (targetAmplitude < amplitudeMin || targetAmplitude > amplitudeMax) {
+      throw new Error('A amplitude secreta precisa estar dentro da faixa configurada.');
+    }
+    if (amplitudeTolerance < 0 || amplitudeTolerance > amplitudeMax - amplitudeMin) {
+      throw new Error('A tolerância de amplitude é inválida.');
+    }
+
+    const interference = ['none', 'low', 'high'].includes(values.frequencyInterference)
+      ? values.frequencyInterference
+      : 'low';
+
+    secret = {
+      targetFrequency,
+      frequencyTolerance,
+      targetChannelId: targetChannel.id,
+      useAmplitude,
+      targetAmplitude,
+      amplitudeTolerance,
+    };
+
+    config = {
+      frequencyMin,
+      frequencyMax,
+      frequencyStep,
+      channels,
+      useAmplitude,
+      amplitudeMin,
+      amplitudeMax,
+      amplitudeStep,
+      interference,
+    };
+  } else if (type === 'lock') {
     const mode = ['keypad', 'wheel', 'deduction'].includes(values.lockMode) ? values.lockMode : 'keypad';
     if (mode === 'deduction') {
       const diceCount = Math.max(1, Math.min(20, Number(values.diceCount) || 4));
@@ -365,6 +493,122 @@ export function evaluateAttempt(puzzle, payload) {
         : { mode: 'individual', marks };
       return { correct, solved: correct, feedback };
     }
+
+    case 'frequency': {
+      const config = puzzle.public.config;
+      const hasFrequency = payload.frequency !== undefined && payload.frequency !== null && payload.frequency !== '';
+      const frequency = hasFrequency ? Number(payload.frequency) : NaN;
+      const channelId = String(payload.channelId || '');
+
+      if (!Number.isFinite(frequency) ||
+          frequency < config.frequencyMin ||
+          frequency > config.frequencyMax) {
+        return {
+          correct: false,
+          solved: false,
+          feedback: {
+            mode: 'frequency',
+            signalLevel: 0,
+            text: 'Frequência inválida ou fora da faixa disponível.',
+          },
+        };
+      }
+
+      if (!config.channels.some((channel) => channel.id === channelId)) {
+        return {
+          correct: false,
+          solved: false,
+          feedback: {
+            mode: 'frequency',
+            signalLevel: 0,
+            text: 'Selecione um canal disponível.',
+          },
+        };
+      }
+
+      const channelCorrect = channelId === secret.targetChannelId;
+      const frequencyDistance = Math.abs(frequency - secret.targetFrequency);
+      const frequencyCorrect = frequencyDistance <= secret.frequencyTolerance;
+
+      let amplitudeCorrect = true;
+      let amplitudeScore = 1;
+
+      if (secret.useAmplitude) {
+        const hasAmplitude = payload.amplitude !== undefined && payload.amplitude !== null && payload.amplitude !== '';
+        const amplitude = hasAmplitude ? Number(payload.amplitude) : NaN;
+
+        if (!Number.isFinite(amplitude) ||
+            amplitude < config.amplitudeMin ||
+            amplitude > config.amplitudeMax) {
+          return {
+            correct: false,
+            solved: false,
+            feedback: {
+              mode: 'frequency',
+              signalLevel: 0,
+              text: 'Amplitude inválida ou fora da faixa disponível.',
+            },
+          };
+        }
+
+        const amplitudeDistance = Math.abs(amplitude - secret.targetAmplitude);
+        amplitudeCorrect = amplitudeDistance <= secret.amplitudeTolerance;
+
+        const amplitudeRange = config.amplitudeMax - config.amplitudeMin;
+        const amplitudeUsefulRange = Math.max(amplitudeRange * 0.35, secret.amplitudeTolerance || 0.001);
+
+        amplitudeScore = amplitudeDistance <= secret.amplitudeTolerance
+          ? 1
+          : Math.max(0, 1 - (amplitudeDistance - secret.amplitudeTolerance) / amplitudeUsefulRange);
+      }
+
+      const frequencyRange = config.frequencyMax - config.frequencyMin;
+      const frequencyUsefulRange = Math.max(frequencyRange * 0.35, secret.frequencyTolerance || 0.001);
+
+      const frequencyScore = frequencyDistance <= secret.frequencyTolerance
+        ? 1
+        : Math.max(0, 1 - (frequencyDistance - secret.frequencyTolerance) / frequencyUsefulRange);
+
+      const combinedScore = secret.useAmplitude
+        ? (frequencyScore + amplitudeScore) / 2
+        : frequencyScore;
+
+      let signalLevel = Math.round(combinedScore * 4);
+
+      // A interferência reduz a precisão do indicador, sem alterar a solução real.
+      if (config.interference === 'low') {
+        signalLevel = Math.round(signalLevel / 2) * 2;
+      } else if (config.interference === 'high') {
+        signalLevel = signalLevel >= 3 ? 4 : 0;
+      }
+
+      signalLevel = channelCorrect ? Math.min(4, signalLevel) : 0;
+
+      const feedbackLevels = [
+        'Sinal praticamente ausente.',
+        'Sinal fraco. Ainda há bastante interferência.',
+        'Sinal moderado. Você está se aproximando.',
+        'Sinal forte. A transmissão está quase estabilizada.',
+        'Sinal muito forte!',
+      ];
+
+      const correct = channelCorrect && frequencyCorrect && amplitudeCorrect;
+
+      return {
+        correct,
+        solved: correct,
+        feedback: {
+          mode: 'frequency',
+          signalLevel: correct ? 4 : signalLevel,
+          text: correct
+            ? 'Sinal estabilizado! Transmissão identificada.'
+            : !channelCorrect
+              ? 'O canal selecionado não está recebendo a transmissão.'
+              : feedbackLevels[signalLevel],
+        },
+      };
+    }
+
     case 'social': {
       const questions = secret.questions || [];
       const index = Number(payload.questionIndex);
@@ -402,6 +646,7 @@ export function evaluateAttempt(puzzle, payload) {
         feedback: { text: solved ? 'Informações suficientes reunidas. Acesso liberado.' : `Informação correta. Progresso: ${progress}/${required}.` },
       };
     }
+
     case 'terminal': {
       const credentialsMatch = normalize(payload.username) === normalize(secret.username)
         && normalize(payload.password) === normalize(secret.password)
@@ -410,26 +655,32 @@ export function evaluateAttempt(puzzle, payload) {
       const correct = credentialsMatch || commandMatch;
       return { correct, solved: correct, feedback: null };
     }
+
     case 'cipher': {
       const correct = normalize(payload.value) === normalize(secret.solution);
       return { correct, solved: correct, feedback: null };
     }
+
     case 'sequence': {
       const correct = sameArray(payload.value, secret.sequence, normalize);
       return { correct, solved: correct, feedback: null };
     }
+
     case 'wires': {
       const correct = String(payload.value) === String(secret.correctWire);
       return { correct, solved: correct, feedback: null };
     }
+
     case 'document': {
       const correct = sameArray(payload.order, secret.order, String);
       return { correct, solved: correct, feedback: null };
     }
+
     case 'switches': {
       const correct = sameArray(payload.value, secret.pattern, Boolean);
       return { correct, solved: correct, feedback: null };
     }
+
     default:
       return { correct: false, solved: false, feedback: null };
   }
@@ -453,19 +704,47 @@ export function attemptLabel(puzzle, payload) {
   switch (puzzle.type) {
     case 'terminal':
       return payload.command ? `Comando: ${payload.command}` : `Login: ${payload.username || '—'}`;
+
     case 'lock':
       if (puzzle.public.config.mode === 'deduction') return `Dados: ${(payload.guess || []).join(' · ')}`;
       return String(payload.value || '').slice(0, 100) || 'Tentativa enviada';
+
     case 'social':
       return `Pergunta ${Number(payload.questionIndex) + 1} · resposta enviada`;
+
+    case 'cipher':
+      return String(payload.value || '').slice(0, 100) || 'Tentativa enviada';
+
+    case 'frequency': {
+      const channel = puzzle.public.config.channels.find(
+        (item) => item.id === payload.channelId
+      );
+      const frequency = Number(payload.frequency);
+      const parts = [
+        `Frequência: ${Number.isFinite(frequency) ? frequency : '—'} MHz`,
+        `Canal: ${channel?.label || '—'}`,
+      ];
+
+      if (puzzle.public.config.useAmplitude) {
+        const amplitude = Number(payload.amplitude);
+        parts.push(`Amplitude: ${Number.isFinite(amplitude) ? amplitude : '—'}%`);
+      }
+
+      return parts.join(' · ');
+    }
+
     case 'sequence':
       return (payload.value || []).join(' → ');
+
     case 'wires':
       return puzzle.public.config.wires.find((wire) => wire.id === payload.value)?.label || 'Fio selecionado';
+
     case 'document':
       return `Documento remontado (${(payload.order || []).length} partes)`;
+
     case 'switches':
       return `Painel: ${(payload.value || []).map((bit) => bit ? '1' : '0').join('')}`;
+
     default:
       return String(payload.value || '').slice(0, 100) || 'Tentativa enviada';
   }
@@ -527,6 +806,17 @@ export function createDemoPuzzles() {
       instructions: 'A cifra é de César. O deslocamento está indicado no rodapé: +3.', cipherText: 'FKDYH HVWD QR DUPDULR',
       cipherMethod: 'caesar', shift: '3', answer: 'CHAVE ESTA NO ARMARIO', attemptLimit: '3', errorEffect: 'none',
       rewardTitle: 'Pista decifrada', rewardContent: 'A chave está no armário atrás da tapeçaria.'
+    }),
+    makePuzzle({
+      type: 'frequency', title: 'Transmissão desconhecida', description: 'Um receptor antigo capta fragmentos de uma transmissão.',
+      instructions: 'Encontre o canal correto e ajuste a frequência até estabilizar o sinal.',
+      frequencyMin: '88', frequencyMax: '108', frequencyStep: '0.1',
+      frequencyTarget: '101.7', frequencyTolerance: '0.5',
+      frequencyChannels: 'AM, FM, Emergência', frequencyTargetChannel: 'FM',
+      frequencyUseAmplitude: 'no', frequencyInterference: 'low',
+      attemptLimit: '6', errorEffect: 'clock',
+      rewardTitle: 'Transmissão encontrada',
+      rewardContent: 'A mensagem diz: “A entrada está atrás do antigo observatório.”',
     }),
     makePuzzle({
       type: 'sequence', title: 'Ritual dos quatro selos', description: 'Os símbolos devem ser pressionados na ordem correta.',
