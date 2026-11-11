@@ -916,7 +916,7 @@ export function createDemoPuzzles() {
       type: 'runes', title: 'O selo do altar', description: 'Quatro runas precisam ser posicionadas sobre a pedra antiga.',
       instructions: 'Reproduza o desenho indicado pelas inscrições ao redor do altar.',
       runeSymbols: 'ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ', runeGridSize: '3',
-      runePattern: 'ᚠ | 1 | 0\\nᚢ | 3 | 90\\nᚦ | 7 | 180\\nᚨ | 9 | 270',
+      runePattern: 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180\nᚨ | 9 | 270',
       attemptLimit: '0', errorEffect: 'none', rewardTitle: 'Selo ativado', rewardContent: 'Uma passagem se abre sob o altar.'
     }),
   ];
