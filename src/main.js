@@ -1015,7 +1015,7 @@ function onClick(event) {
   }
   if (action === 'dismiss-notice') { state.notice = ''; return render(); }
   if (action === 'select-puzzle') {
-    state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.cipherOffset = 0; state.notice = ''; return render();
+    state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.runePlacements = []; state.selectedRuneId = null; state.cipherOffset = 0; state.notice = ''; return render();
   }
   if (action === 'new-puzzle') {
     state.editorId = null;
