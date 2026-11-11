@@ -2,12 +2,12 @@
   "name": "Dynamic Puzzles",
   "version": "0.1.0",
   "manifest_version": 1,
+  "author": "Blackcode1242",
   "description": "Crie e compartilhe enigmas interativos com seus jogadores.",
-  "icon": "./icon.svg",
-  "author": "Dynamic Puzzles",
+  "icon": "https://blackcode1242.github.io/dynamic-puzzles/icon.svg",
   "action": {
     "title": "Dynamic Puzzles",
-    "icon": "./icon.svg",
+    "icon": "https://blackcode1242.github.io/dynamic-puzzles/icon.svg",
     "popover": "./",
     "width": 1120,
     "height": 820
