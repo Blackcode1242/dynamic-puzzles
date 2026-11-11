@@ -973,13 +973,18 @@ function onClick(event) {
   if (action === 'export-backup') return exportBackup();
 }
 
-function onChange(event) {
+function onInput(event) {
   if (event.target.matches('[data-frequency-range]')) {
-    const out=root.querySelector('[data-frequency-value]'); if(out) out.textContent=`${Number(event.target.value).toFixed(1).replace('.',',')} MHz`; return;
+    const out=root.querySelector('[data-frequency-value]');
+    if (out) out.textContent=`${Number(event.target.value).toFixed(1).replace('.',',')} MHz`;
   }
   if (event.target.matches('[data-amplitude-range]')) {
-    const out=root.querySelector('[data-amplitude-value]'); if(out) out.textContent=`${Math.round(Number(event.target.value))}%`; return;
+    const out=root.querySelector('[data-amplitude-value]');
+    if (out) out.textContent=`${Number(event.target.value).toLocaleString('pt-BR')}%`;
   }
+}
+
+function onChange(event) {
   if (event.target.matches('[data-cipher-offset]')) {
     state.cipherOffset = Number(event.target.value) || 0;
     return render();
@@ -1038,6 +1043,7 @@ async function importBackup(file) {
 root.addEventListener('click', onClick);
 root.addEventListener('submit', onSubmit);
 root.addEventListener('change', onChange);
+root.addEventListener('input', onInput);
 root.addEventListener('dragstart', (event) => {
   const row = event.target.closest('[data-fragment-row]');
   if (!row) return;
