@@ -9,6 +9,7 @@ let connected = false;
 let handlers = {};
 let partyPlayers = [];
 let currentPlayer = null;
+let lastActivitySentAt = 0;
 
 function waitForReady() {
   return new Promise((resolve) => OBR.onReady(resolve));
@@ -133,6 +134,9 @@ export async function submitAttempt(puzzleId, payload, playerName) {
 
 export async function sendActivity(puzzleId, activity) {
   if (!connected || currentRole !== 'PLAYER') return false;
+  const now = Date.now();
+  if (now - lastActivitySentAt < 1200) return false;
+  lastActivitySentAt = now;
   await OBR.broadcast.sendMessage(BROADCAST_CHANNEL, {
     type: 'activity',
     puzzleId,
