@@ -1035,6 +1035,9 @@ function onClick(event) {
 }
 
 function onInput(event) {
+  if (event.target.closest('form[data-form^="attempt-"]') && state.connected && state.role === 'PLAYER') {
+    sendActivity(getSelectedPuzzle()?.id, 'interagindo com o enigma');
+  }
   if (event.target.matches('[data-frequency-range]')) {
     const out=root.querySelector('[data-frequency-value]');
     if (out) out.textContent=`${Number(event.target.value).toFixed(1).replace('.',',')} MHz`;
