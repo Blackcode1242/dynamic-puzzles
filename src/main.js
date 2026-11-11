@@ -1013,11 +1013,11 @@ function onClick(event) {
     return;
   }
   if (action === 'clear-lock') { const input = root.querySelector('[data-lock-input]'); if (input) input.value = ''; return; }
-  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'montando a sequência'); return render(); }
+  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `montando sequência: ${state.sequence.join(' ')}`); return render(); }
   if (action === 'sequence-remove') { state.sequence.splice(Number(button.dataset.index), 1); return render(); }
   if (action === 'sequence-clear') { state.sequence = []; return render(); }
   if (action === 'submit-sequence') { const value = [...state.sequence]; state.sequence = []; return submitPayload({ value }); }
-  if (action === 'select-wire') { state.selectedWireId = id; if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'escolhendo um fio'); return render(); }
+  if (action === 'select-wire') { state.selectedWireId = id; const wire = getSelectedPuzzle()?.config?.wires?.find((item) => item.id === id); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `selecionou o fio ${wire?.label || ''}`); return render(); }
   if (action === 'submit-wire') { const value = state.selectedWireId; state.selectedWireId = null; return submitPayload({ value }); }
   if (action === 'move-fragment') {
     const puzzle = getSelectedPuzzle();
@@ -1038,7 +1038,7 @@ function onClick(event) {
   if (action === 'toggle-switch') {
     const index = Number(button.dataset.index);
     state.switches[index] = !state.switches[index];
-    if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'ajustando os interruptores');
+    if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `interruptores: ${state.switches.map((bit) => bit ? '1' : '0').join('')}`);
     return render();
   }
   if (action === 'submit-switches') { const value = [...state.switches]; return submitPayload({ value }); }
@@ -1046,8 +1046,10 @@ function onClick(event) {
 }
 
 function onInput(event) {
-  if (event.target.closest('form[data-form^="attempt-"]') && state.connected && state.role === 'PLAYER') {
-    sendActivity(getSelectedPuzzle()?.id, 'interagindo com o enigma');
+  if (state.connected && state.role === 'PLAYER' && event.target.closest('form[data-form^="attempt-"]')) {
+    if (event.target.matches('[data-frequency-range]')) sendActivity(getSelectedPuzzle()?.id, `sintonizando em ${Number(event.target.value).toFixed(1)} MHz`);
+    else if (event.target.matches('[data-amplitude-range]')) sendActivity(getSelectedPuzzle()?.id, `ajustando amplitude para ${Number(event.target.value)}%`);
+    else sendActivity(getSelectedPuzzle()?.id, 'preenchendo os controles do enigma');
   }
   if (event.target.matches('[data-frequency-range]')) {
     const out=root.querySelector('[data-frequency-value]');
