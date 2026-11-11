@@ -259,7 +259,8 @@ function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
   }
 
   if (individual) {
-    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, reveal: publicPuzzle.solved ? privatePuzzle.reward : null, updatedAt: Date.now() } };
+    storedPublic.history = publicPuzzle.history;
+    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, updatedAt: Date.now() } };
     storedPublic.attemptsUsed = Object.values(storedPublic.playerProgress).reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
     storedPublic.updatedAt = Date.now();
   }
@@ -430,6 +431,7 @@ function safeHttpUrl(value) {
 }
 
 function renderSolved(puzzle) {
+  if (puzzle.participationMode === 'individual') return `<div class="result-panel result-success"><div class="result-icon">✓</div><div><span class="eyebrow">PROGRESSO INDIVIDUAL</span><h2>Desafio concluído por você</h2><p>Seu progresso foi concluído. Os demais jogadores continuam com suas próprias tentativas.</p></div></div>`;
   const rewardUrl = safeHttpUrl(puzzle.reveal?.url);
   return `<div class="result-panel result-success"><div class="result-icon">✓</div><div><span class="eyebrow">ACESSO CONCEDIDO</span><h2>Enigma solucionado</h2><p>O mestre liberou o conteúdo abaixo para todos na sala.</p>${puzzle.reveal?.title ? `<h3 class="reveal-title">${escapeHtml(puzzle.reveal.title)}</h3>` : ''}${puzzle.reveal?.content ? `<div class="reveal-content">${escapeHtml(puzzle.reveal.content)}</div>` : ''}${rewardUrl ? `<a class="button button-primary reward-link" href="${escapeHtml(rewardUrl)}" target="_blank" rel="noopener noreferrer">Abrir documento / item <span>↗</span></a>` : ''}${!puzzle.reveal?.content && !rewardUrl ? '<div class="reveal-content">Nenhum conteúdo adicional foi configurado.</div>' : ''}</div></div>`;
 }
@@ -606,7 +608,8 @@ function renderEditor() {
   const typeOptions = PUZZLE_TYPES.map((item) => `<option value="${item.id}" ${type === item.id ? 'selected' : ''}>${item.label}</option>`).join('');
   const participationMode = draft.participationMode || 'shared';
   const allowedIds = Array.isArray(draft.allowedPlayerIds) ? draft.allowedPlayerIds : [];
-  const participantOptions = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => `<label class="multiplayer-player-option"><input type="checkbox" name="allowedPlayerIds" value="${escapeHtml(player.id)}" ${allowedIds.includes(player.id) ? 'checked' : ''}/><span>${escapeHtml(player.name)}</span></label>`).join('');
+  const onlinePlayerIds = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => player.id);
+  const participantOptions = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => `<label class="multiplayer-player-option"><input type="checkbox" name="allowedPlayerIds" value="${escapeHtml(player.id)}" ${allowedIds.includes(player.id) ? 'checked' : ''}/><span>${escapeHtml(player.name)}</span></label>`).join('') + allowedIds.filter((id) => !onlinePlayerIds.includes(id)).map((id) => `<input type="hidden" name="allowedPlayerIds" value="${escapeHtml(id)}"/>`).join('');
   const hiddenAdvanced = advanced ? '' : `
     <input type="hidden" name="attemptLimit" value="${escapeHtml(draft.attemptLimit ?? 0)}" />
     <input type="hidden" name="errorEffect" value="${escapeHtml(draft.errorEffect || 'none')}" />
@@ -969,6 +972,7 @@ function onClick(event) {
       target.public.solvedQuestionIds = [];
       target.public.reveal = null;
       target.public.revealedHints = [];
+      target.public.playerProgress = {};
     }
     recalculateSequenceLocks(state.privatePuzzles);
     saveAndPublish(); return setNotice(sequenceName ? `Etapa e etapas seguintes reiniciadas (${targets.length}).` : 'Progresso do enigma reiniciado.', 'success');
