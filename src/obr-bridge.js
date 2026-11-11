@@ -20,7 +20,7 @@ function normalizePlayer(player, fallback = {}) {
   return {
     id,
     connectionId: String(player?.connectionId || fallback.connectionId || ''),
-    name: String(player?.name || player?.metadata?.name || fallback.name || `Jogador ${id.slice(0, 6)}`),
+    name: String(player?.name || player?.metadata?.[`${EXTENSION_ID}/profile`]?.name || player?.metadata?.name || fallback.name || `Jogador ${id.slice(0, 6)}`),
     role: String(player?.role || fallback.role || 'PLAYER'),
     color: String(player?.color || fallback.color || '#a78bfa'),
   };
@@ -63,6 +63,7 @@ export async function connectToOwlbear(callbacks = {}) {
   const playerId = String(OBR.player.id || await OBR.player.getId());
   const connectionId = await OBR.player.getConnectionId().catch(() => '');
   currentPlayer = normalizePlayer({ id: playerId, connectionId, name: playerName, role: currentRole });
+  await OBR.player.setMetadata({ [`${EXTENSION_ID}/profile`]: { name: playerName } }).catch(() => {});
   await refreshParty();
 
   OBR.room.onMetadataChange((metadata) => {
