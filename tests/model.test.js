@@ -549,7 +549,14 @@ test('modo individual e lista de participantes são publicados sem revelar a sol
   assert.equal(publicPuzzle.participationMode, 'individual');
   assert.deepEqual(publicPuzzle.playerProgress['player-1'], { attemptsUsed: 2, solved: false });
   assert.doesNotMatch(serialized, /senha-super-secreta/);
-  assert.equal(puzzle.public.allowedPlayerIds.includes('player-1'), true);
+  const controlledPuzzle = makePuzzle({
+    type: 'lock',
+    title: 'Cofre controlado',
+    answer: 'outra-senha',
+    participationMode: 'controlled',
+    allowedPlayerIds: ['player-1'],
+  });
+  assert.equal(controlledPuzzle.public.allowedPlayerIds.includes('player-1'), true);
 });
 
 test('trocar de modo não carrega o progresso individual para modo compartilhado', () => {
