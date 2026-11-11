@@ -262,6 +262,12 @@ function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
     storedPublic.history = publicPuzzle.history;
     storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, updatedAt: Date.now() } };
     storedPublic.attemptsUsed = Object.values(storedPublic.playerProgress).reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
+    const participantIds = state.partyPlayers.filter((player) => player.role === 'PLAYER').map((player) => player.id);
+    const everyoneFinished = participantIds.length > 0 && participantIds.every((id) => storedPublic.playerProgress[id]?.solved);
+    if (everyoneFinished || (state.demoMode && solved)) {
+      storedPublic.solved = true;
+      storedPublic.reveal = privatePuzzle.reward;
+    }
     storedPublic.updatedAt = Date.now();
   }
   const message = solved
