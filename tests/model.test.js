@@ -356,7 +356,7 @@ test('Sintonia de Frequência reduz a precisão do indicador com interferência'
   });
 
   const attempt = {
-    frequency: 92,
+    frequency: 96.5,
     channelId: 'channel-1',
   };
 
