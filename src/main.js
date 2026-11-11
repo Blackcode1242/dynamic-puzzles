@@ -236,6 +236,7 @@ function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
   const entry = {
     id: crypto.randomUUID(),
     actor: safeText(actor || 'Jogador', 48),
+    actorId: String(playerId || ''),
     submitted,
     result: solved ? 'success' : correct ? 'progress' : 'failure',
     feedback: evaluation.feedback || null,
@@ -259,8 +260,8 @@ function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
   }
 
   if (individual) {
-    storedPublic.history = publicPuzzle.history;
-    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, updatedAt: Date.now() } };
+    const individualHistory = [...(playerProgress.history || []), entry].slice(-15);
+    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, history: individualHistory, updatedAt: Date.now() } };
     storedPublic.attemptsUsed = Object.values(storedPublic.playerProgress).reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
     const participantIds = state.partyPlayers.filter((player) => player.role === 'PLAYER').map((player) => player.id);
     const everyoneFinished = participantIds.length > 0 && participantIds.every((id) => storedPublic.playerProgress[id]?.solved);
@@ -284,7 +285,9 @@ async function processAttempt(request) {
   if (state.role !== 'GM') return;
   const privatePuzzle = getPrivatePuzzle(request?.puzzleId);
   if (!privatePuzzle) return;
-  const playerId = request.playerId || `unknown-${safeText(request.playerName, 30)}`;
+  const playerId = request.playerId || request.connectionId || '';
+  if (!playerId) return;
+  if (privatePuzzle.public.participationMode === 'controlled' && !request.playerId) { setNotice('Não foi possível identificar com segurança o jogador que enviou a tentativa.', 'warning'); return; }
   if (!canPlayerInteract(privatePuzzle.public, playerId, 'PLAYER')) { setNotice(`${request.playerName || 'O jogador'} tentou interagir sem permissão neste enigma.`, 'warning'); return; }
   const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador', playerId);
   recalculateSequenceLocks(state.privatePuzzles);
@@ -566,7 +569,10 @@ function historyFeedbackText(feedback) {
 }
 
 function renderHistory(puzzle) {
-  const history = [...(puzzle.history || [])].reverse();
+  const sourceHistory = puzzle.participationMode === 'individual' && state.role === 'GM'
+    ? Object.values(puzzle.playerProgress || {}).flatMap((progress) => progress.history || [])
+    : (puzzle.history || []);
+  const history = [...sourceHistory].sort((a, b) => (b.at || 0) - (a.at || 0));
   const historyLabel = puzzle.participationMode === 'individual' ? 'Histórico de tentativas da sala' : 'Histórico de tentativas';
   return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>${historyLabel}</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
 }
