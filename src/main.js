@@ -415,6 +415,7 @@ function renderPlayerControls(puzzle) {
     case 'lock': return renderLock(puzzle);
     case 'terminal': return renderTerminal(puzzle);
     case 'cipher': return renderCipher(puzzle);
+    case 'frequency': return renderFrequency(puzzle);
     case 'sequence': return renderSequence(puzzle);
     case 'wires': return renderWires(puzzle);
     case 'document': return renderDocument(puzzle);
@@ -435,6 +436,31 @@ function renderLock(puzzle) {
     return `<form class="control-form" data-form="attempt-lock-wheel"><div class="field-label">AJUSTE OS DISCOS</div><div class="wheel-row">${Array.from({ length: puzzle.config.wheelLength }, (_, index) => `<select class="wheel-select" data-wheel aria-label="Disco ${index + 1}">${'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((symbol) => `<option>${symbol}</option>`).join('')}</select>`).join('')}</div><button class="button button-primary button-wide" type="submit">Confirmar combinação <span>→</span></button></form>`;
   }
   return `<form class="control-form" data-form="attempt-lock"><label class="field-label" for="lock-value">DIGITE A COMBINAÇÃO</label><input id="lock-value" class="code-input" name="value" data-lock-input maxlength="32" autocomplete="off" placeholder="••••••" /><div class="keypad">${'1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((key) => `<button type="button" class="key" data-action="append-key" data-key="${key}">${key}</button>`).join('')}</div><div class="control-actions"><button class="button button-quiet" type="button" data-action="clear-lock">Limpar</button><button class="button button-primary" type="submit">Destravar <span>→</span></button></div></form>`;
+}
+
+
+function renderFrequency(puzzle) {
+  const config = puzzle.config || {};
+  const channels = config.channels || [];
+  const step = Number(config.frequencyStep || 0.1);
+  const center = Math.min(config.frequencyMax, Math.max(config.frequencyMin,
+    Math.round(((config.frequencyMin + config.frequencyMax) / 2) / step) * step));
+  const feedback = [...(puzzle.history || [])].reverse().find((entry) => entry.feedback?.mode === 'frequency')?.feedback;
+  const level = Math.max(0, Math.min(4, Number(feedback?.signalLevel) || 0));
+  const signalLabels = ['Sem sinal', 'Sinal fraco', 'Sinal moderado', 'Sinal forte', 'Sinal estabilizado'];
+  return `<div class="frequency-console">
+    <div class="frequency-console-head"><div><span class="field-label">RECEPTOR DE ONDAS</span><strong>SCANNER // RF-07</strong></div><span class="frequency-live"><i></i> BUSCANDO TRANSMISSÃO</span></div>
+    <form class="control-form frequency-form" data-form="attempt-frequency">
+      <label class="form-field"><span>CANAL DE RECEPÇÃO</span><select name="channelId" required>${channels.map((channel,index)=>`<option value="${escapeHtml(channel.id)}" ${index===0?'selected':''}>${escapeHtml(channel.label)}</option>`).join('')}</select></label>
+      <div class="frequency-tuner"><div class="frequency-readout"><span class="field-label">FREQUÊNCIA SINTONIZADA</span><output data-frequency-value>${Number(center).toFixed(1).replace('.',',')} MHz</output></div>
+        <input class="frequency-range" type="range" name="frequency" min="${escapeHtml(config.frequencyMin)}" max="${escapeHtml(config.frequencyMax)}" step="${escapeHtml(step)}" value="${escapeHtml(center)}" data-frequency-range aria-label="Ajustar frequência"/>
+        <div class="frequency-range-labels"><span>${escapeHtml(config.frequencyMin)} MHz</span><span>${escapeHtml(config.frequencyMax)} MHz</span></div></div>
+      ${config.useAmplitude?`<div class="frequency-tuner"><div class="frequency-readout"><span class="field-label">AMPLITUDE</span><output data-amplitude-value>50%</output></div><input class="frequency-range" type="range" name="amplitude" min="${escapeHtml(config.amplitudeMin)}" max="${escapeHtml(config.amplitudeMax)}" step="${escapeHtml(config.amplitudeStep||1)}" value="${escapeHtml((config.amplitudeMin+config.amplitudeMax)/2)}" data-amplitude-range aria-label="Ajustar amplitude"/><div class="frequency-range-labels"><span>${escapeHtml(config.amplitudeMin)}%</span><span>${escapeHtml(config.amplitudeMax)}%</span></div></div>`:''}
+      <button class="button button-primary button-wide" type="submit">Verificar sintonia <span>→</span></button>
+    </form>
+    <section class="frequency-signal" aria-live="polite"><div class="frequency-signal-top"><span class="field-label">INTENSIDADE DO SINAL</span><strong>${escapeHtml(feedback?.text||'Aguardando varredura…')}</strong></div>
+      <div class="signal-meter" role="img" aria-label="${level} de 4 níveis de sinal">${Array.from({length:4},(_,i)=>`<i class="${i<level?'active':''}"></i>`).join('')}</div><small>${level?signalLabels[level]:'Ajuste o receptor e envie uma tentativa para medir o sinal.'}</small></section>
+  </div>`;
 }
 
 function renderSocial(puzzle) {
@@ -511,6 +537,7 @@ function renderGuide() {
   const entries = [
     ['Cadeado · teclado ou discos', 'Configure uma senha de letras e números. Escolha teclado para digitação ou discos para ajustar cada caractere. Use quando a fechadura tem uma combinação conhecida por pistas, códigos ou documentos.', 'Exemplo: quatro caracteres que aparecem em um diário, data ou etiqueta. O mestre pode limitar tentativas e associar erros a um alarme ou avanço do relógio.'],
     ['Destrancamento por dados', 'Escolha a quantidade de dados (1 a 20), o tipo (d4, d6, d8, d10 ou d12), a combinação secreta na ordem e o formato de feedback. Cada posição é comparada ao valor secreto daquela mesma posição.', 'Individual: cada dado recebe “acima, diminua”, “abaixo, aumente” ou “exato”. Agrupado: a sala recebe apenas a contagem de resultados acima, abaixo e exatos, sem revelar quais posições acertaram. Exemplo: 4d8 com senha 6-2-7-3. Use o limite de tentativas para representar a resistência da fechadura.'],
+    ['Sintonia de frequência', 'Defina a faixa, o intervalo de ajuste, os canais disponíveis e a frequência/canal secretos. O jogador escolhe um canal e ajusta o receptor até encontrar o sinal.', 'A interferência altera a precisão do indicador, não a solução correta. Na configuração avançada, também é possível exigir amplitude como segundo controle.'],
     ['Hack Social', 'Insira uma linha por pergunta no formato: pergunta | resposta | variações. Separe respostas alternativas por ponto e vírgula. Escolha Sequencial para exigir a ordem definida ou Investigativo para permitir que o grupo responda às perguntas em qualquer ordem. Defina quantas informações corretas bastam para liberar o acesso.', 'Exemplo: “Qual o nome do cachorro? | Thor | Thorinho;Trovão”. No modo investigativo, as perguntas ficam visíveis e o grupo escolhe qual informação já descobriu. No sequencial, a próxima pergunta só aparece depois de acertar a atual. O mestre deve validar manualmente o teste inicial de Intuição antes de liberar o minigame, caso queira seguir essa etapa do playtest.'],
     ['Terminal', 'Configure usuário, senha e/ou comandos permitidos. O jogador pode autenticar com as credenciais ou executar um dos comandos cadastrados.', 'Exemplo: “admin” + senha ou comando “open vault”. Use falhas para disparar alarmes, bloqueios ou relógios de segurança.'],
     ['Cifra', 'Escolha César, substituição ou roda de cifras. Insira o texto cifrado e a solução que o grupo deve enviar. Nas cifras de César, configure o deslocamento.', 'Exemplo: uma carta interceptada com a mensagem “A CHAVE ESTÁ NO ARMÁRIO”. Dê pistas graduais sobre método e deslocamento.'],
@@ -600,6 +627,36 @@ function renderTypeFields(type, draft, advanced = false) {
     }
     return `<div class="form-two-columns">${input('answer', 'Resposta correta', draft.answer, 'Ex.: 0482')}${modeField}</div><p class="field-help">O teclado aceita letras e números. Os discos exibem a quantidade de caracteres da resposta.</p>`;
   }
+
+  if (type === 'frequency') {
+    const useAmplitude = draft.frequencyUseAmplitude === 'yes' || draft.frequencyUseAmplitude === true;
+    const channels = String(draft.frequencyChannels || 'AM, FM, Emergência').split(/[\\n,;]+/).map((v)=>v.trim()).filter(Boolean);
+    const extra = advanced ? `
+      ${input('frequencyTolerance','Tolerância da frequência (MHz)',draft.frequencyTolerance??0.5,'0.5','number')}
+      <label class="form-field"><span>Interferência</span><select name="frequencyInterference">
+        <option value="none" ${draft.frequencyInterference==='none'?'selected':''}>Nenhuma</option>
+        <option value="low" ${(draft.frequencyInterference||'low')==='low'?'selected':''}>Baixa</option>
+        <option value="high" ${draft.frequencyInterference==='high'?'selected':''}>Alta</option>
+      </select></label>
+      ${useAmplitude?`<div class="form-divider-label">AJUSTES DE AMPLITUDE</div>
+        <div class="form-two-columns">${input('frequencyAmplitudeMin','Amplitude mínima (%)',draft.frequencyAmplitudeMin??0,'0','number')}${input('frequencyAmplitudeMax','Amplitude máxima (%)',draft.frequencyAmplitudeMax??100,'100','number')}</div>
+        <div class="form-two-columns">${input('frequencyAmplitudeStep','Intervalo (%)',draft.frequencyAmplitudeStep??1,'1','number')}${input('frequencyAmplitudeTarget','Amplitude secreta (%)',draft.frequencyAmplitudeTarget??65,'65','number')}</div>
+        ${input('frequencyAmplitudeTolerance','Tolerância da amplitude (%)',draft.frequencyAmplitudeTolerance??5,'5','number')}`:''}`: `
+      <input type="hidden" name="frequencyTolerance" value="${escapeHtml(draft.frequencyTolerance??0.5)}"/>
+      <input type="hidden" name="frequencyInterference" value="${escapeHtml(draft.frequencyInterference||'low')}"/>
+      <input type="hidden" name="frequencyAmplitudeMin" value="${escapeHtml(draft.frequencyAmplitudeMin??0)}"/>
+      <input type="hidden" name="frequencyAmplitudeMax" value="${escapeHtml(draft.frequencyAmplitudeMax??100)}"/>
+      <input type="hidden" name="frequencyAmplitudeStep" value="${escapeHtml(draft.frequencyAmplitudeStep??1)}"/>
+      <input type="hidden" name="frequencyAmplitudeTarget" value="${escapeHtml(draft.frequencyAmplitudeTarget??65)}"/>
+      <input type="hidden" name="frequencyAmplitudeTolerance" value="${escapeHtml(draft.frequencyAmplitudeTolerance??5)}"/>`;
+    return `<div class="form-two-columns">${input('frequencyMin','Frequência mínima (MHz)',draft.frequencyMin??88,'88','number')}${input('frequencyMax','Frequência máxima (MHz)',draft.frequencyMax??108,'108','number')}</div>
+      <div class="form-two-columns">${input('frequencyStep','Intervalo de sintonia (MHz)',draft.frequencyStep??0.1,'0.1','number')}${input('frequencyTarget','Frequência secreta (MHz)',draft.frequencyTarget??101.7,'101.7','number')}</div>
+      ${textarea('frequencyChannels','Canais disponíveis',draft.frequencyChannels||'AM, FM, Emergência','AM, FM, Emergência')}
+      ${input('frequencyTargetChannel','Canal correto (secreto)',draft.frequencyTargetChannel||channels[1]||channels[0]||'FM','FM')}
+      <label class="form-field"><span>Usar controle adicional de amplitude?</span><select name="frequencyUseAmplitude" data-editor-frequency-amplitude><option value="no" ${!useAmplitude?'selected':''}>Não, somente frequência e canal</option><option value="yes" ${useAmplitude?'selected':''}>Sim, exigir amplitude</option></select></label>
+      ${extra}<p class="field-help">A frequência e o canal secretos ficam privados no dispositivo do mestre. Os jogadores recebem somente a faixa e os canais disponíveis.</p>`;
+  }
+
   if (type === 'social') {
     const questionCount = String(draft.socialQuestions || '').split(/\r?\n/).filter((line) => line.trim()).length;
     return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor&#10;Em que cidade nasceu? | Santos">${escapeHtml(draft.socialQuestions || '')}</textarea><small>${advanced ? 'Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.' : 'Formato simples: pergunta | resposta. A quantidade de respostas definida no modelo é mantida; para alterá-la, use o modo avançado.'}</small></label>${advanced ? `<label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? questionCount ?? 1)}" /></label>` : `<input type="hidden" name="requiredAnswers" value="${escapeHtml(Math.min(Number(draft.requiredAnswers) || questionCount || 1, questionCount || 1))}" />`}<p class="field-help">As perguntas são públicas; as respostas e variações permanecem privadas.</p>`;
@@ -651,6 +708,17 @@ function draftFromPrivate(puzzle) {
     if (puzzle.public.config.mode === 'deduction') Object.assign(draft, { lockMode: 'deduction', diceCount: puzzle.public.config.diceCount, diceSides: puzzle.public.config.diceSides, diceAnswer: (puzzle.secret.combination || []).join(', '), feedbackMode: puzzle.public.config.feedbackMode });
     else Object.assign(draft, { answer: puzzle.secret.code, lockMode: puzzle.public.config.mode });
   }
+  if (puzzle.type === 'frequency') Object.assign(draft, {
+    frequencyMin:puzzle.public.config.frequencyMin, frequencyMax:puzzle.public.config.frequencyMax,
+    frequencyStep:puzzle.public.config.frequencyStep, frequencyTarget:puzzle.secret.targetFrequency,
+    frequencyTolerance:puzzle.secret.frequencyTolerance,
+    frequencyChannels:(puzzle.public.config.channels||[]).map((c)=>c.label).join(', '),
+    frequencyTargetChannel:puzzle.public.config.channels.find((c)=>c.id===puzzle.secret.targetChannelId)?.label||'',
+    frequencyUseAmplitude:puzzle.secret.useAmplitude?'yes':'no',
+    frequencyAmplitudeMin:puzzle.public.config.amplitudeMin, frequencyAmplitudeMax:puzzle.public.config.amplitudeMax,
+    frequencyAmplitudeStep:puzzle.public.config.amplitudeStep, frequencyAmplitudeTarget:puzzle.secret.targetAmplitude,
+    frequencyAmplitudeTolerance:puzzle.secret.amplitudeTolerance, frequencyInterference:puzzle.public.config.interference,
+  });
   if (puzzle.type === 'social') Object.assign(draft, { socialMode: puzzle.public.config.mode, requiredAnswers: puzzle.public.config.requiredAnswers, socialQuestions: (puzzle.secret.questions || []).map((question) => `${question.prompt} | ${question.answers?.[0] || ''} | ${(question.answers || []).slice(1).join(';')}`).join('\n') });
   if (puzzle.type === 'terminal') Object.assign(draft, { username: puzzle.secret.username, password: puzzle.secret.password, acceptedCommands: (puzzle.secret.commands || []).join('\n'), terminalLabel: puzzle.public.config.terminalLabel });
   if (puzzle.type === 'cipher') Object.assign(draft, { answer: puzzle.secret.solution, cipherText: puzzle.public.config.cipherText, cipherMethod: puzzle.public.config.method, shift: puzzle.public.config.shift });
@@ -676,6 +744,21 @@ function validateEditor(values) {
       if (![4, 6, 8, 10, 12].includes(sides)) return 'Escolha D4, D6, D8, D10 ou D12.';
       if (combination.length !== count || combination.some((value) => !Number.isInteger(value) || value < 1 || value > sides)) return `Informe exatamente ${count} valores inteiros entre 1 e ${sides}, na ordem correta.`;
     } else if (!values.answer?.trim()) return 'Informe a combinação correta do cadeado.';
+  }
+  if (values.type === 'frequency') {
+    const min=Number(values.frequencyMin), max=Number(values.frequencyMax), step=Number(values.frequencyStep), target=Number(values.frequencyTarget), tol=Number(values.frequencyTolerance??0.5);
+    const channels=String(values.frequencyChannels||'').split(/[\\n,;]+/).map(v=>v.trim()).filter(Boolean);
+    if (![min,max,step,target,tol].every(Number.isFinite)) return 'Preencha os valores de frequência com números válidos.';
+    if (max<=min || step<=0 || step>max-min) return 'A faixa ou o intervalo de sintonia é inválido.';
+    if (target<min || target>max) return 'A frequência secreta precisa estar dentro da faixa configurada.';
+    if (tol<0 || tol>max-min) return 'A tolerância da frequência é inválida.';
+    if (!channels.length) return 'Adicione pelo menos um canal.';
+    if (!channels.some(v=>normalizeName(v)===normalizeName(values.frequencyTargetChannel))) return 'O canal correto precisa corresponder a um dos canais disponíveis.';
+    if (values.frequencyUseAmplitude==='yes') {
+      const amin=Number(values.frequencyAmplitudeMin??0), amax=Number(values.frequencyAmplitudeMax??100), astep=Number(values.frequencyAmplitudeStep??1), atarget=Number(values.frequencyAmplitudeTarget??65), atol=Number(values.frequencyAmplitudeTolerance??5);
+      if (![amin,amax,astep,atarget,atol].every(Number.isFinite)) return 'Preencha os valores de amplitude com números válidos.';
+      if (amax<=amin || astep<=0 || astep>amax-amin || atarget<amin || atarget>amax || atol<0 || atol>amax-amin) return 'A faixa, amplitude secreta ou tolerância está inválida.';
+    }
   }
   if (values.type === 'social') {
     const questions = String(values.socialQuestions || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => line.split('|').map((part) => part.trim()));
@@ -753,6 +836,10 @@ async function onSubmit(event) {
   if (formType === 'attempt-social') {
     const values = readForm(form);
     return submitPayload({ questionIndex: Number(values.questionIndex), answer: safeText(values.answer, 160) });
+  }
+  if (formType === 'attempt-frequency') {
+    const values=readForm(form);
+    return submitPayload({frequency:Number(values.frequency),channelId:safeText(values.channelId,40),...(values.amplitude!==undefined?{amplitude:Number(values.amplitude)}:{})});
   }
   if (formType === 'attempt-terminal') {
     const values = readForm(form);
@@ -887,11 +974,17 @@ function onClick(event) {
 }
 
 function onChange(event) {
+  if (event.target.matches('[data-frequency-range]')) {
+    const out=root.querySelector('[data-frequency-value]'); if(out) out.textContent=`${Number(event.target.value).toFixed(1).replace('.',',')} MHz`; return;
+  }
+  if (event.target.matches('[data-amplitude-range]')) {
+    const out=root.querySelector('[data-amplitude-value]'); if(out) out.textContent=`${Math.round(Number(event.target.value))}%`; return;
+  }
   if (event.target.matches('[data-cipher-offset]')) {
     state.cipherOffset = Number(event.target.value) || 0;
     return render();
   }
-  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode]')) {
+  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode], [data-editor-frequency-amplitude]')) {
     const form = event.target.closest('form');
     const values = readForm(form);
     const type = event.target.matches('[data-editor-type]') ? event.target.value : (values.type || state.editorDraft?.type || 'lock');
