@@ -1,0 +1,22 @@
+{
+  "name": "dynamic-puzzles",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Extensão de enigmas interativos para Owlbear Rodeo 2",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@owlbear-rodeo/sdk": "^3.1.0"
+  },
+  "devDependencies": {
+    "vite": "^6.4.6"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

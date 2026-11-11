@@ -1,0 +1,15 @@
+{
+  "name": "Dynamic Puzzles",
+  "version": "0.1.0",
+  "manifest_version": 1,
+  "description": "Crie e compartilhe enigmas interativos com seus jogadores.",
+  "icon": "./icon.svg",
+  "author": "Dynamic Puzzles",
+  "action": {
+    "title": "Dynamic Puzzles",
+    "icon": "./icon.svg",
+    "popover": "./",
+    "width": 1120,
+    "height": 820
+  }
+}
