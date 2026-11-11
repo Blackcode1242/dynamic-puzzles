@@ -175,8 +175,13 @@ async function bootstrap() {
     const connection = await connectToOwlbear({
       onPublicState: (publicState) => setPublicState(publicState),
       onAttempt: (request) => queueAttempt(request),
-      onPartyChange: (players) => { state.partyPlayers = players; render(); },
-      onActivity: (activity) => { state.activePlayers[activity.playerId] = activity; render(); },
+      onPartyChange: (players) => {
+        const editorForm = root.querySelector('form[data-form="puzzle-editor"]');
+        if (editorForm) state.editorDraft = { ...state.editorDraft, ...readForm(editorForm) };
+        state.partyPlayers = players;
+        render();
+      },
+      onActivity: (activity) => { state.activePlayers[activity.playerId] = activity; refreshActivityIndicator(); },
     });
     state.connected = connection.connected;
     state.role = connection.role;
@@ -422,7 +427,7 @@ function renderPuzzleWorkspace(puzzle) {
     ${puzzle.description ? `<p class="puzzle-description">${escapeHtml(puzzle.description)}</p>` : ''}
     <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}${puzzle.sequenceName ? `<span class="counter counter-sequence">▤ ${escapeHtml(puzzle.sequenceName)} · etapa ${puzzle.sequenceOrder}</span>` : ''}</div>
     ${renderRevealedHints(puzzle)}
-    ${activity.length ? `<div class="multiplayer-activity"><span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}</div>` : ''}
+    <div class="multiplayer-activity" data-multiplayer-activity ${activity.length ? '' : 'hidden'}><span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}</div>
     <section class="challenge-card">
       <div class="challenge-topline"><span class="challenge-kicker">INTERFACE DO DESAFIO</span><span class="challenge-coord">DP / ${escapeHtml(puzzle.id.slice(0, 5).toUpperCase())}</span></div>
       ${puzzle.instructions ? `<div class="instruction-box"><span class="instruction-icon">✧</span><p>${escapeHtml(puzzle.instructions)}</p></div>` : ''}
@@ -430,6 +435,17 @@ function renderPuzzleWorkspace(puzzle) {
     </section>
     ${renderHistory(puzzle)}
   `;
+}
+
+function refreshActivityIndicator() {
+  const container = root.querySelector('[data-multiplayer-activity]');
+  if (!container) return;
+  const puzzle = getSelectedPuzzle();
+  const activity = Object.values(state.activePlayers).filter((item) => item.puzzleId === puzzle?.id && Date.now() - item.at < 12000);
+  container.hidden = activity.length === 0;
+  container.innerHTML = activity.length
+    ? `<span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}`
+    : '';
 }
 
 function renderRevealedHints(puzzle) {
