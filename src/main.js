@@ -11,11 +11,14 @@ import {
   PUZZLE_TEMPLATES,
   getPuzzleTemplate,
   recalculateSequenceLocks,
+  PARTICIPATION_MODES,
+  canPlayerInteract,
 } from './model.js';
 import {
   connectToOwlbear,
   publishPublicState,
   submitAttempt as sendRemoteAttempt,
+  sendActivity,
   showNotification,
 } from './obr-bridge.js';
 
@@ -30,6 +33,9 @@ const state = {
   role: 'GM',
   roomId: 'demo-room',
   playerName: 'Mestre (demonstração)',
+  playerId: 'demo-player',
+  partyPlayers: [],
+  activePlayers: {},
   demoMode: true,
   tab: 'room',
   selectedPuzzleId: null,
@@ -95,7 +101,9 @@ function getPrivatePuzzle(id) {
 }
 
 function getSelectedPuzzle() {
-  return getPuzzle(state.selectedPuzzleId) || currentPublicPuzzles()[0] || null;
+  const puzzle = getPuzzle(state.selectedPuzzleId) || currentPublicPuzzles()[0] || null;
+  if (!puzzle || state.role === 'GM' || puzzle.participationMode !== 'individual') return puzzle;
+  return { ...puzzle, ...(puzzle.playerProgress?.[state.playerId] || {}), playerProgress: puzzle.playerProgress || {} };
 }
 
 function setNotice(message, tone = 'info') {
@@ -121,7 +129,18 @@ function compactPublicState(publicState) {
   const next = structuredClone(publicState);
   const measure = () => new TextEncoder().encode(JSON.stringify(next)).length;
   if (measure() > ROOM_METADATA_LIMIT) {
-    for (const puzzle of next.puzzles) puzzle.history = (puzzle.history || []).slice(-6);
+    for (const puzzle of next.puzzles) {
+      puzzle.history = (puzzle.history || []).slice(-6);
+      for (const progress of Object.values(puzzle.playerProgress || {})) {
+        if (Array.isArray(progress.history)) progress.history = progress.history.slice(-3);
+      }
+    }
+  }
+  if (measure() > ROOM_METADATA_LIMIT) {
+    for (const puzzle of next.puzzles) {
+      puzzle.history = [];
+      for (const progress of Object.values(puzzle.playerProgress || {})) delete progress.history;
+    }
   }
   return next;
 }
@@ -156,11 +175,20 @@ async function bootstrap() {
     const connection = await connectToOwlbear({
       onPublicState: (publicState) => setPublicState(publicState),
       onAttempt: (request) => queueAttempt(request),
+      onPartyChange: (players) => {
+        const editorForm = root.querySelector('form[data-form="puzzle-editor"]');
+        if (editorForm) state.editorDraft = { ...state.editorDraft, ...readForm(editorForm) };
+        state.partyPlayers = players;
+        render();
+      },
+      onActivity: (activity) => { state.activePlayers[activity.playerId] = activity; refreshActivityIndicator(); },
     });
     state.connected = connection.connected;
     state.role = connection.role;
     state.roomId = connection.roomId;
     state.playerName = connection.playerName || 'Jogador';
+    state.playerId = connection.playerId || 'demo-player';
+    state.partyPlayers = connection.partyPlayers || [];
     state.demoMode = !connection.connected;
     state.playerNameDraft = state.playerName;
 
@@ -202,12 +230,16 @@ async function bootstrap() {
   }
 }
 
-function recordAttempt(privatePuzzle, payload, actor) {
-  const publicPuzzle = privatePuzzle.public;
+function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
+  const individual = privatePuzzle.public.participationMode === 'individual';
+  const storedPublic = privatePuzzle.public;
+  const playerProgress = individual ? (storedPublic.playerProgress?.[playerId] || {}) : null;
+  const workingPuzzle = individual ? { ...privatePuzzle, public: { ...storedPublic, attemptsUsed: playerProgress.attemptsUsed || 0, consequenceCount: playerProgress.consequenceCount || 0, clockCount: playerProgress.clockCount || 0, alarmCount: playerProgress.alarmCount || 0, solved: Boolean(playerProgress.solved), locked: Boolean(playerProgress.locked), questionIndex: playerProgress.questionIndex || 0, solvedQuestionIds: playerProgress.solvedQuestionIds || [], history: storedPublic.history || [], reveal: playerProgress.solved ? privatePuzzle.reward : null } } : privatePuzzle;
+  const publicPuzzle = workingPuzzle.public;
   if (publicPuzzle.sequenceLocked) return { ok: false, solved: false, message: 'Esta etapa ainda depende da conclusão do enigma anterior.' };
   if (publicPuzzle.solved) return { ok: false, solved: false, message: 'Este enigma já foi resolvido.' };
   if (publicPuzzle.locked) return { ok: false, solved: false, message: 'Este enigma está bloqueado. Peça ao mestre para reiniciá-lo.' };
-  const evaluation = evaluateAttempt(privatePuzzle, payload);
+  const evaluation = evaluateAttempt(workingPuzzle, payload);
   const correct = evaluation.correct;
   const solved = evaluation.solved;
   if (evaluation.progressUpdate) {
@@ -216,10 +248,11 @@ function recordAttempt(privatePuzzle, payload, actor) {
   }
   // No Hack Social, respostas corretas avançam o progresso; o limite conta apenas erros.
   if (privatePuzzle.type !== 'social' || !correct) publicPuzzle.attemptsUsed += 1;
-  const submitted = attemptLabel(privatePuzzle, payload).slice(0, 110);
+  const submitted = attemptLabel(workingPuzzle, payload).slice(0, 110);
   const entry = {
     id: crypto.randomUUID(),
     actor: safeText(actor || 'Jogador', 48),
+    actorId: String(playerId || ''),
     submitted,
     result: solved ? 'success' : correct ? 'progress' : 'failure',
     feedback: evaluation.feedback || null,
@@ -242,6 +275,22 @@ function recordAttempt(privatePuzzle, payload, actor) {
     }
   }
 
+  if (individual) {
+    const individualHistory = [...(playerProgress.history || []), entry].slice(-15);
+    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, history: individualHistory, updatedAt: Date.now() } };
+    const allProgress = Object.values(storedPublic.playerProgress);
+    storedPublic.attemptsUsed = allProgress.reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
+    storedPublic.consequenceCount = allProgress.reduce((sum, item) => sum + (item.consequenceCount || 0), 0);
+    storedPublic.clockCount = allProgress.reduce((sum, item) => sum + (item.clockCount || 0), 0);
+    storedPublic.alarmCount = allProgress.reduce((sum, item) => sum + (item.alarmCount || 0), 0);
+    const participantIds = state.partyPlayers.filter((player) => player.role === 'PLAYER').map((player) => player.id);
+    const everyoneFinished = participantIds.length > 0 && participantIds.every((id) => storedPublic.playerProgress[id]?.solved);
+    if (everyoneFinished || (state.demoMode && solved)) {
+      storedPublic.solved = true;
+      storedPublic.reveal = privatePuzzle.reward;
+    }
+    storedPublic.updatedAt = Date.now();
+  }
   const message = solved
     ? `Enigma resolvido: ${privatePuzzle.title}`
     : correct
@@ -256,7 +305,11 @@ async function processAttempt(request) {
   if (state.role !== 'GM') return;
   const privatePuzzle = getPrivatePuzzle(request?.puzzleId);
   if (!privatePuzzle) return;
-  const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador');
+  const playerId = request.playerId || request.connectionId || '';
+  if (!playerId) return;
+  if (privatePuzzle.public.participationMode === 'controlled' && !request.playerId) { setNotice('Não foi possível identificar com segurança o jogador que enviou a tentativa.', 'warning'); return; }
+  if (!canPlayerInteract(privatePuzzle.public, playerId, 'PLAYER')) { setNotice(`${request.playerName || 'O jogador'} tentou interagir sem permissão neste enigma.`, 'warning'); return; }
+  const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador', playerId);
   recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   if (state.connected) showNotification(result.message, result.ok ? 'SUCCESS' : 'WARNING');
@@ -266,6 +319,7 @@ async function processAttempt(request) {
 async function submitPayload(payload) {
   const puzzle = getSelectedPuzzle();
   if (!puzzle) return;
+  if (state.connected && state.role === 'PLAYER') sendActivity(puzzle.id, 'enviando uma tentativa');
   if (puzzle.sequenceLocked && state.role === 'PLAYER') {
     setNotice('Esta etapa será liberada quando o enigma anterior da sequência for resolvido.', 'warning');
     return;
@@ -275,6 +329,7 @@ async function submitPayload(payload) {
     return;
   }
 
+  if (state.role === 'PLAYER' && !canPlayerInteract(puzzle, state.playerId, state.role)) { setNotice('Este enigma está em modo colaborativo com controle. Aguarde o mestre liberar sua participação.', 'warning'); return; }
   if (state.connected && state.role === 'PLAYER') {
     try {
       await sendRemoteAttempt(puzzle.id, payload, state.playerNameDraft || state.playerName);
@@ -291,7 +346,7 @@ async function submitPayload(payload) {
     setNotice('O mestre precisa abrir a extensão no dispositivo onde as respostas privadas foram configuradas.', 'warning');
     return;
   }
-  const result = recordAttempt(privatePuzzle, payload, state.demoMode ? 'Você (teste)' : 'Teste do mestre');
+  const result = recordAttempt(privatePuzzle, payload, state.demoMode ? 'Você (teste)' : 'Teste do mestre', state.playerId);
   recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   setNotice(result.message, result.ok ? 'success' : 'warning');
@@ -360,6 +415,9 @@ function renderRoom() {
 }
 
 function renderPuzzleWorkspace(puzzle) {
+  const canInteract = canPlayerInteract(puzzle, state.playerId, state.role);
+  const modeLabel = PARTICIPATION_MODES.find((mode) => mode.id === (puzzle.participationMode || 'shared'))?.label || 'Compartilhado';
+  const activity = Object.values(state.activePlayers).filter((item) => item.puzzleId === puzzle.id && Date.now() - item.at < 12000);
   const consequence = [];
   if (puzzle.clockCount) consequence.push(`<span class="counter counter-clock">◷ Relógio +${puzzle.clockCount}</span>`);
   if (puzzle.alarmCount) consequence.push(`<span class="counter counter-alarm">♢ Alarmes ${puzzle.alarmCount}</span>`);
@@ -367,19 +425,31 @@ function renderPuzzleWorkspace(puzzle) {
   const attemptsLabel = puzzle.attemptLimit > 0 ? `${puzzle.attemptsUsed} / ${puzzle.attemptLimit}` : `${puzzle.attemptsUsed} / ∞`;
   return `
     <div class="puzzle-heading-row">
-      <div><span class="eyebrow">${escapeHtml(TYPE_LABELS[puzzle.type] || 'ENIGMA')} · DESAFIO ATIVO</span><h1>${escapeHtml(puzzle.title)}</h1></div>
+      <div><span class="eyebrow">${escapeHtml(TYPE_LABELS[puzzle.type] || 'ENIGMA')} · ${escapeHtml(modeLabel.toUpperCase())}</span><h1>${escapeHtml(puzzle.title)}</h1></div>
       ${statusChip(puzzle)}
     </div>
     ${puzzle.description ? `<p class="puzzle-description">${escapeHtml(puzzle.description)}</p>` : ''}
     <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}${puzzle.sequenceName ? `<span class="counter counter-sequence">▤ ${escapeHtml(puzzle.sequenceName)} · etapa ${puzzle.sequenceOrder}</span>` : ''}</div>
     ${renderRevealedHints(puzzle)}
+    <div class="multiplayer-activity" data-multiplayer-activity ${activity.length ? '' : 'hidden'}><span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}</div>
     <section class="challenge-card">
       <div class="challenge-topline"><span class="challenge-kicker">INTERFACE DO DESAFIO</span><span class="challenge-coord">DP / ${escapeHtml(puzzle.id.slice(0, 5).toUpperCase())}</span></div>
       ${puzzle.instructions ? `<div class="instruction-box"><span class="instruction-icon">✧</span><p>${escapeHtml(puzzle.instructions)}</p></div>` : ''}
-      ${puzzle.sequenceLocked ? renderSequenceWaiting(puzzle) : puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
+      ${!canInteract && state.role === 'PLAYER' ? '<div class="result-panel result-locked"><div class="result-icon">⌑</div><div><span class="eyebrow">AGUARDANDO AUTORIZAÇÃO</span><h2>Você está acompanhando</h2><p>O mestre ainda não liberou sua interação neste enigma.</p></div></div>' : puzzle.sequenceLocked ? renderSequenceWaiting(puzzle) : puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
     </section>
     ${renderHistory(puzzle)}
   `;
+}
+
+function refreshActivityIndicator() {
+  const container = root.querySelector('[data-multiplayer-activity]');
+  if (!container) return;
+  const puzzle = getSelectedPuzzle();
+  const activity = Object.values(state.activePlayers).filter((item) => item.puzzleId === puzzle?.id && Date.now() - item.at < 12000);
+  container.hidden = activity.length === 0;
+  container.innerHTML = activity.length
+    ? `<span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}`
+    : '';
 }
 
 function renderRevealedHints(puzzle) {
@@ -402,6 +472,7 @@ function safeHttpUrl(value) {
 }
 
 function renderSolved(puzzle) {
+  if (puzzle.participationMode === 'individual' && !puzzle.reveal) return `<div class="result-panel result-success"><div class="result-icon">✓</div><div><span class="eyebrow">PROGRESSO INDIVIDUAL</span><h2>Desafio concluído por você</h2><p>Seu progresso foi concluído. Os demais jogadores continuam com suas próprias tentativas.</p></div></div>`;
   const rewardUrl = safeHttpUrl(puzzle.reveal?.url);
   return `<div class="result-panel result-success"><div class="result-icon">✓</div><div><span class="eyebrow">ACESSO CONCEDIDO</span><h2>Enigma solucionado</h2><p>O mestre liberou o conteúdo abaixo para todos na sala.</p>${puzzle.reveal?.title ? `<h3 class="reveal-title">${escapeHtml(puzzle.reveal.title)}</h3>` : ''}${puzzle.reveal?.content ? `<div class="reveal-content">${escapeHtml(puzzle.reveal.content)}</div>` : ''}${rewardUrl ? `<a class="button button-primary reward-link" href="${escapeHtml(rewardUrl)}" target="_blank" rel="noopener noreferrer">Abrir documento / item <span>↗</span></a>` : ''}${!puzzle.reveal?.content && !rewardUrl ? '<div class="reveal-content">Nenhum conteúdo adicional foi configurado.</div>' : ''}</div></div>`;
 }
@@ -415,6 +486,7 @@ function renderPlayerControls(puzzle) {
     case 'lock': return renderLock(puzzle);
     case 'terminal': return renderTerminal(puzzle);
     case 'cipher': return renderCipher(puzzle);
+    case 'frequency': return renderFrequency(puzzle);
     case 'sequence': return renderSequence(puzzle);
     case 'wires': return renderWires(puzzle);
     case 'document': return renderDocument(puzzle);
@@ -435,6 +507,31 @@ function renderLock(puzzle) {
     return `<form class="control-form" data-form="attempt-lock-wheel"><div class="field-label">AJUSTE OS DISCOS</div><div class="wheel-row">${Array.from({ length: puzzle.config.wheelLength }, (_, index) => `<select class="wheel-select" data-wheel aria-label="Disco ${index + 1}">${'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((symbol) => `<option>${symbol}</option>`).join('')}</select>`).join('')}</div><button class="button button-primary button-wide" type="submit">Confirmar combinação <span>→</span></button></form>`;
   }
   return `<form class="control-form" data-form="attempt-lock"><label class="field-label" for="lock-value">DIGITE A COMBINAÇÃO</label><input id="lock-value" class="code-input" name="value" data-lock-input maxlength="32" autocomplete="off" placeholder="••••••" /><div class="keypad">${'1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((key) => `<button type="button" class="key" data-action="append-key" data-key="${key}">${key}</button>`).join('')}</div><div class="control-actions"><button class="button button-quiet" type="button" data-action="clear-lock">Limpar</button><button class="button button-primary" type="submit">Destravar <span>→</span></button></div></form>`;
+}
+
+
+function renderFrequency(puzzle) {
+  const config = puzzle.config || {};
+  const channels = config.channels || [];
+  const step = Number(config.frequencyStep || 0.1);
+  const center = Math.min(config.frequencyMax, Math.max(config.frequencyMin,
+    Math.round(((config.frequencyMin + config.frequencyMax) / 2) / step) * step));
+  const feedback = [...(puzzle.history || [])].reverse().find((entry) => entry.feedback?.mode === 'frequency')?.feedback;
+  const level = Math.max(0, Math.min(4, Number(feedback?.signalLevel) || 0));
+  const signalLabels = ['Sem sinal', 'Sinal fraco', 'Sinal moderado', 'Sinal forte', 'Sinal estabilizado'];
+  return `<div class="frequency-console">
+    <div class="frequency-console-head"><div><span class="field-label">RECEPTOR DE ONDAS</span><strong>SCANNER // RF-07</strong></div><span class="frequency-live"><i></i> BUSCANDO TRANSMISSÃO</span></div>
+    <form class="control-form frequency-form" data-form="attempt-frequency">
+      <label class="form-field"><span>CANAL DE RECEPÇÃO</span><select name="channelId" required>${channels.map((channel,index)=>`<option value="${escapeHtml(channel.id)}" ${index===0?'selected':''}>${escapeHtml(channel.label)}</option>`).join('')}</select></label>
+      <div class="frequency-tuner"><div class="frequency-readout"><span class="field-label">FREQUÊNCIA SINTONIZADA</span><output data-frequency-value>${Number(center).toFixed(1).replace('.',',')} MHz</output></div>
+        <input class="frequency-range" type="range" name="frequency" min="${escapeHtml(config.frequencyMin)}" max="${escapeHtml(config.frequencyMax)}" step="${escapeHtml(step)}" value="${escapeHtml(center)}" data-frequency-range aria-label="Ajustar frequência"/>
+        <div class="frequency-range-labels"><span>${escapeHtml(config.frequencyMin)} MHz</span><span>${escapeHtml(config.frequencyMax)} MHz</span></div></div>
+      ${config.useAmplitude?`<div class="frequency-tuner"><div class="frequency-readout"><span class="field-label">AMPLITUDE</span><output data-amplitude-value>50%</output></div><input class="frequency-range" type="range" name="amplitude" min="${escapeHtml(config.amplitudeMin)}" max="${escapeHtml(config.amplitudeMax)}" step="${escapeHtml(config.amplitudeStep||1)}" value="${escapeHtml((config.amplitudeMin+config.amplitudeMax)/2)}" data-amplitude-range aria-label="Ajustar amplitude"/><div class="frequency-range-labels"><span>${escapeHtml(config.amplitudeMin)}%</span><span>${escapeHtml(config.amplitudeMax)}%</span></div></div>`:''}
+      <button class="button button-primary button-wide" type="submit">Verificar sintonia <span>→</span></button>
+    </form>
+    <section class="frequency-signal" aria-live="polite"><div class="frequency-signal-top"><span class="field-label">INTENSIDADE DO SINAL</span><strong>${escapeHtml(feedback?.text||'Aguardando varredura…')}</strong></div>
+      <div class="signal-meter" role="img" aria-label="${level} de 4 níveis de sinal">${Array.from({length:4},(_,i)=>`<i class="${i<level?'active':''}"></i>`).join('')}</div><small>${level?signalLabels[level]:'Ajuste o receptor e envie uma tentativa para medir o sinal.'}</small></section>
+  </div>`;
 }
 
 function renderSocial(puzzle) {
@@ -503,14 +600,19 @@ function historyFeedbackText(feedback) {
 }
 
 function renderHistory(puzzle) {
-  const history = [...(puzzle.history || [])].reverse();
-  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>Histórico de tentativas</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
+  const sourceHistory = puzzle.participationMode === 'individual' && state.role === 'GM'
+    ? Object.values(puzzle.playerProgress || {}).flatMap((progress) => progress.history || [])
+    : (puzzle.history || []);
+  const history = [...sourceHistory].sort((a, b) => (b.at || 0) - (a.at || 0));
+  const historyLabel = puzzle.participationMode === 'individual' ? 'Histórico de tentativas da sala' : 'Histórico de tentativas';
+  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>${historyLabel}</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
 }
 
 function renderGuide() {
   const entries = [
     ['Cadeado · teclado ou discos', 'Configure uma senha de letras e números. Escolha teclado para digitação ou discos para ajustar cada caractere. Use quando a fechadura tem uma combinação conhecida por pistas, códigos ou documentos.', 'Exemplo: quatro caracteres que aparecem em um diário, data ou etiqueta. O mestre pode limitar tentativas e associar erros a um alarme ou avanço do relógio.'],
     ['Destrancamento por dados', 'Escolha a quantidade de dados (1 a 20), o tipo (d4, d6, d8, d10 ou d12), a combinação secreta na ordem e o formato de feedback. Cada posição é comparada ao valor secreto daquela mesma posição.', 'Individual: cada dado recebe “acima, diminua”, “abaixo, aumente” ou “exato”. Agrupado: a sala recebe apenas a contagem de resultados acima, abaixo e exatos, sem revelar quais posições acertaram. Exemplo: 4d8 com senha 6-2-7-3. Use o limite de tentativas para representar a resistência da fechadura.'],
+    ['Sintonia de frequência', 'Defina a faixa, o intervalo de ajuste, os canais disponíveis e a frequência/canal secretos. O jogador escolhe um canal e ajusta o receptor até encontrar o sinal.', 'A interferência altera a precisão do indicador, não a solução correta. Na configuração avançada, também é possível exigir amplitude como segundo controle.'],
     ['Hack Social', 'Insira uma linha por pergunta no formato: pergunta | resposta | variações. Separe respostas alternativas por ponto e vírgula. Escolha Sequencial para exigir a ordem definida ou Investigativo para permitir que o grupo responda às perguntas em qualquer ordem. Defina quantas informações corretas bastam para liberar o acesso.', 'Exemplo: “Qual o nome do cachorro? | Thor | Thorinho;Trovão”. No modo investigativo, as perguntas ficam visíveis e o grupo escolhe qual informação já descobriu. No sequencial, a próxima pergunta só aparece depois de acertar a atual. O mestre deve validar manualmente o teste inicial de Intuição antes de liberar o minigame, caso queira seguir essa etapa do playtest.'],
     ['Terminal', 'Configure usuário, senha e/ou comandos permitidos. O jogador pode autenticar com as credenciais ou executar um dos comandos cadastrados.', 'Exemplo: “admin” + senha ou comando “open vault”. Use falhas para disparar alarmes, bloqueios ou relógios de segurança.'],
     ['Cifra', 'Escolha César, substituição ou roda de cifras. Insira o texto cifrado e a solução que o grupo deve enviar. Nas cifras de César, configure o deslocamento.', 'Exemplo: uma carta interceptada com a mensagem “A CHAVE ESTÁ NO ARMÁRIO”. Dê pistas graduais sobre método e deslocamento.'],
@@ -532,7 +634,7 @@ function renderMaster() {
     <div class="master-intro"><div><span class="eyebrow">CONTROLE DE CAMPANHA</span><h1>Estúdio do mestre</h1><p>Crie, configure e acompanhe os desafios da sua sala.</p></div><div class="master-intro-actions"><button class="button button-quiet" data-action="tab-library">Biblioteca de modelos</button><button class="button button-primary" data-action="new-puzzle" ${puzzles.length >= MAX_PUZZLES ? 'disabled' : ''}>＋ Novo enigma</button></div></div>
     <div class="stats-grid"><div class="stat-card"><span>ENIGMAS CRIADOS</span><strong>${String(puzzles.length).padStart(2, '0')}</strong><small>Limite local: ${MAX_PUZZLES}</small></div><div class="stat-card"><span>RESOLVIDOS</span><strong class="stat-green">${String(solved).padStart(2, '0')}</strong><small>${puzzles.length ? Math.round((solved / puzzles.length) * 100) : 0}% da sala</small></div><div class="stat-card"><span>RELÓGIOS AVANÇADOS</span><strong class="stat-amber">${String(clocks).padStart(2, '0')}</strong><small>Consequências registradas</small></div><div class="stat-card"><span>ALARMES DISPARADOS</span><strong class="stat-red">${String(alarms).padStart(2, '0')}</strong><small>Consequências registradas</small></div></div>
     <div class="master-section-heading"><div><span class="eyebrow">BIBLIOTECA DE DESAFIOS</span><h2>Seus enigmas</h2></div><span class="muted-small">As soluções não são compartilhadas com os jogadores.</span></div>
-    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} ${puzzle.type === 'social' ? 'erro(s)' : 'tentativa(s)'}</span><span>${puzzle.public.history.length} eventos</span></div>${puzzle.public.sequenceName ? `<div class="master-card-chain">▤ ${escapeHtml(puzzle.public.sequenceName)} · etapa ${puzzle.public.sequenceOrder}</div>` : ''}${(puzzle.hints || []).length ? `<div class="master-card-hints"><span>Dicas: ${puzzle.public.revealedHints?.length || 0}/${puzzle.hints.length}</span><button class="button button-quiet button-mini" data-action="release-hint" data-id="${escapeHtml(puzzle.id)}" ${(puzzle.public.revealedHints?.length || 0) >= puzzle.hints.length ? 'disabled' : ''}>Liberar próxima dica</button></div>` : ''}<div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
+    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} ${puzzle.type === 'social' ? 'erro(s)' : 'tentativa(s)'}</span><span>${puzzle.public.participationMode === 'individual' ? Object.values(puzzle.public.playerProgress || {}).reduce((sum, item) => sum + (item.history?.length || 0), 0) : puzzle.public.history.length} eventos</span></div>${puzzle.public.participationMode === 'individual' ? `<div class="master-card-chain">Progresso individual: ${Object.values(puzzle.public.playerProgress || {}).filter((item) => item.solved).length}/${state.partyPlayers.filter((player) => player.role === 'PLAYER').length || Object.keys(puzzle.public.playerProgress || {}).length} concluído(s)</div>` : ''}${puzzle.public.sequenceName ? `<div class="master-card-chain">▤ ${escapeHtml(puzzle.public.sequenceName)} · etapa ${puzzle.public.sequenceOrder}</div>` : ''}${(puzzle.hints || []).length ? `<div class="master-card-hints"><span>Dicas: ${puzzle.public.revealedHints?.length || 0}/${puzzle.hints.length}</span><button class="button button-quiet button-mini" data-action="release-hint" data-id="${escapeHtml(puzzle.id)}" ${(puzzle.public.revealedHints?.length || 0) >= puzzle.hints.length ? 'disabled' : ''}>Liberar próxima dica</button></div>` : ''}<div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
     ${puzzles.length ? `<div class="master-footer-actions"><button class="button button-quiet" data-action="seed-demo" ${puzzles.length + 11 > MAX_PUZZLES ? 'disabled' : ''}>＋ Adicionar conjunto de exemplos</button><button class="button button-quiet" data-action="export-backup">Exportar backup privado ↓</button><label class="button button-quiet file-button">Importar backup ↑<input type="file" accept="application/json" data-action="import-backup" hidden /></label></div>` : ''}
     <div class="security-note"><span>◈</span><div><strong>Respostas protegidas por separação de dados</strong><p>As soluções e a configuração privada ficam no armazenamento local do navegador do mestre. A sala recebe somente as informações públicas dos desafios e os resultados das tentativas.</p></div></div>
   </section>`;
@@ -548,6 +650,10 @@ function renderEditor() {
       ? PUZZLE_TEMPLATES.find((item) => item.id === 'lock-wheel')
       : (PUZZLE_TEMPLATES.find((item) => item.type === type && !['lock-dice', 'lock-wheel'].includes(item.id)) || PUZZLE_TEMPLATES.find((item) => item.type === type));
   const typeOptions = PUZZLE_TYPES.map((item) => `<option value="${item.id}" ${type === item.id ? 'selected' : ''}>${item.label}</option>`).join('');
+  const participationMode = draft.participationMode || 'shared';
+  const allowedIds = Array.isArray(draft.allowedPlayerIds) ? draft.allowedPlayerIds : [];
+  const onlinePlayerIds = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => player.id);
+  const participantOptions = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => `<label class="multiplayer-player-option"><input type="checkbox" name="allowedPlayerIds" value="${escapeHtml(player.id)}" ${allowedIds.includes(player.id) ? 'checked' : ''}/><span>${escapeHtml(player.name)}</span></label>`).join('') + allowedIds.filter((id) => !onlinePlayerIds.includes(id)).map((id) => `<input type="hidden" name="allowedPlayerIds" value="${escapeHtml(id)}"/>`).join('');
   const hiddenAdvanced = advanced ? '' : `
     <input type="hidden" name="attemptLimit" value="${escapeHtml(draft.attemptLimit ?? 0)}" />
     <input type="hidden" name="errorEffect" value="${escapeHtml(draft.errorEffect || 'none')}" />
@@ -558,6 +664,11 @@ function renderEditor() {
     <section class="editor-mode-card"><div><span class="eyebrow">NÍVEL DE CONFIGURAÇÃO</span><h3>${advanced ? 'Opções avançadas' : 'Configuração simples'}</h3><p>${advanced ? 'Personalize regras, dicas e encadeamento entre desafios.' : 'Configure o necessário para colocar o enigma em jogo. Você pode aprofundar depois.'}</p></div><div class="editor-mode-actions"><button type="button" class="mode-choice ${!advanced ? 'active' : ''}" data-action="editor-mode-simple">Simples</button><button type="button" class="mode-choice ${advanced ? 'active' : ''}" data-action="editor-mode-advanced">Avançado</button></div></section>
     <section class="editor-template-strip"><div class="editor-template-preview"><span class="eyebrow">DEMONSTRAÇÃO · ${escapeHtml(template?.label || 'ENIGMA')}</span><strong>${escapeHtml(template?.preview || 'Modelo de exemplo')}</strong><small>${escapeHtml(template?.description || '')}</small></div><button class="button button-quiet" type="button" data-action="load-template">Carregar exemplo deste tipo</button><button class="button button-quiet" type="button" data-action="tab-library">Ver todos os modelos</button></section>
     <div class="editor-columns"><div class="editor-main-column">
+      <section class="editor-card multiplayer-editor-card"><div class="editor-card-heading"><span class="editor-icon">◎</span><div><h3>Participação dos jogadores</h3><p>Escolha como a mesa interage com este enigma.</p></div></div>
+        <label class="form-field"><span>Modo de participação</span><select name="participationMode" data-editor-participation-mode>${PARTICIPATION_MODES.map((mode) => `<option value="${mode.id}" ${participationMode === mode.id ? 'selected' : ''}>${mode.label}</option>`).join('')}</select></label>
+        <p class="field-help">${PARTICIPATION_MODES.find((mode) => mode.id === participationMode)?.description || ''}</p>
+        ${participationMode === 'controlled' ? `<div class="multiplayer-player-list"><span class="field-label">QUEM PODE INTERAGIR</span>${participantOptions || '<small>Nenhum jogador conectado. Os jogadores aparecerão aqui quando entrarem na sala.</small>'}</div>` : ''}
+      </section>
       <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">◇</span><div><h3>Identidade do desafio</h3><p>O conteúdo apresentado aos jogadores.</p></div></div>
         <label class="form-field"><span>Nome do enigma</span><input name="title" required maxlength="80" value="${escapeHtml(draft.title || '')}" placeholder="Ex.: Cofre da biblioteca" /></label>
         <label class="form-field"><span>Tipo de interação</span><select name="type" data-editor-type>${typeOptions}</select></label>
@@ -600,6 +711,36 @@ function renderTypeFields(type, draft, advanced = false) {
     }
     return `<div class="form-two-columns">${input('answer', 'Resposta correta', draft.answer, 'Ex.: 0482')}${modeField}</div><p class="field-help">O teclado aceita letras e números. Os discos exibem a quantidade de caracteres da resposta.</p>`;
   }
+
+  if (type === 'frequency') {
+    const useAmplitude = draft.frequencyUseAmplitude === 'yes' || draft.frequencyUseAmplitude === true;
+    const channels = String(draft.frequencyChannels || 'AM, FM, Emergência').split(/[\\n,;]+/).map((v)=>v.trim()).filter(Boolean);
+    const extra = advanced ? `
+      ${input('frequencyTolerance','Tolerância da frequência (MHz)',draft.frequencyTolerance??0.5,'0.5','number')}
+      <label class="form-field"><span>Interferência</span><select name="frequencyInterference">
+        <option value="none" ${draft.frequencyInterference==='none'?'selected':''}>Nenhuma</option>
+        <option value="low" ${(draft.frequencyInterference||'low')==='low'?'selected':''}>Baixa</option>
+        <option value="high" ${draft.frequencyInterference==='high'?'selected':''}>Alta</option>
+      </select></label>
+      ${useAmplitude?`<div class="form-divider-label">AJUSTES DE AMPLITUDE</div>
+        <div class="form-two-columns">${input('frequencyAmplitudeMin','Amplitude mínima (%)',draft.frequencyAmplitudeMin??0,'0','number')}${input('frequencyAmplitudeMax','Amplitude máxima (%)',draft.frequencyAmplitudeMax??100,'100','number')}</div>
+        <div class="form-two-columns">${input('frequencyAmplitudeStep','Intervalo (%)',draft.frequencyAmplitudeStep??1,'1','number')}${input('frequencyAmplitudeTarget','Amplitude secreta (%)',draft.frequencyAmplitudeTarget??65,'65','number')}</div>
+        ${input('frequencyAmplitudeTolerance','Tolerância da amplitude (%)',draft.frequencyAmplitudeTolerance??5,'5','number')}`:''}`: `
+      <input type="hidden" name="frequencyTolerance" value="${escapeHtml(draft.frequencyTolerance??0.5)}"/>
+      <input type="hidden" name="frequencyInterference" value="${escapeHtml(draft.frequencyInterference||'low')}"/>
+      <input type="hidden" name="frequencyAmplitudeMin" value="${escapeHtml(draft.frequencyAmplitudeMin??0)}"/>
+      <input type="hidden" name="frequencyAmplitudeMax" value="${escapeHtml(draft.frequencyAmplitudeMax??100)}"/>
+      <input type="hidden" name="frequencyAmplitudeStep" value="${escapeHtml(draft.frequencyAmplitudeStep??1)}"/>
+      <input type="hidden" name="frequencyAmplitudeTarget" value="${escapeHtml(draft.frequencyAmplitudeTarget??65)}"/>
+      <input type="hidden" name="frequencyAmplitudeTolerance" value="${escapeHtml(draft.frequencyAmplitudeTolerance??5)}"/>`;
+    return `<div class="form-two-columns">${input('frequencyMin','Frequência mínima (MHz)',draft.frequencyMin??88,'88','number')}${input('frequencyMax','Frequência máxima (MHz)',draft.frequencyMax??108,'108','number')}</div>
+      <div class="form-two-columns">${input('frequencyStep','Intervalo de sintonia (MHz)',draft.frequencyStep??0.1,'0.1','number')}${input('frequencyTarget','Frequência secreta (MHz)',draft.frequencyTarget??101.7,'101.7','number')}</div>
+      ${textarea('frequencyChannels','Canais disponíveis',draft.frequencyChannels||'AM, FM, Emergência','AM, FM, Emergência')}
+      ${input('frequencyTargetChannel','Canal correto (secreto)',draft.frequencyTargetChannel||channels[1]||channels[0]||'FM','FM')}
+      <label class="form-field"><span>Usar controle adicional de amplitude?</span><select name="frequencyUseAmplitude" data-editor-frequency-amplitude><option value="no" ${!useAmplitude?'selected':''}>Não, somente frequência e canal</option><option value="yes" ${useAmplitude?'selected':''}>Sim, exigir amplitude</option></select></label>
+      ${extra}<p class="field-help">A frequência e o canal secretos ficam privados no dispositivo do mestre. Os jogadores recebem somente a faixa e os canais disponíveis.</p>`;
+  }
+
   if (type === 'social') {
     const questionCount = String(draft.socialQuestions || '').split(/\r?\n/).filter((line) => line.trim()).length;
     return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor&#10;Em que cidade nasceu? | Santos">${escapeHtml(draft.socialQuestions || '')}</textarea><small>${advanced ? 'Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.' : 'Formato simples: pergunta | resposta. A quantidade de respostas definida no modelo é mantida; para alterá-la, use o modo avançado.'}</small></label>${advanced ? `<label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? questionCount ?? 1)}" /></label>` : `<input type="hidden" name="requiredAnswers" value="${escapeHtml(Math.min(Number(draft.requiredAnswers) || questionCount || 1, questionCount || 1))}" />`}<p class="field-help">As perguntas são públicas; as respostas e variações permanecem privadas.</p>`;
@@ -628,7 +769,8 @@ function render() {
 }
 
 function readForm(form) {
-  return Object.fromEntries(new FormData(form).entries());
+  const data = new FormData(form);
+  return { ...Object.fromEntries(data.entries()), allowedPlayerIds: data.getAll('allowedPlayerIds') };
 }
 
 function draftFromPrivate(puzzle) {
@@ -645,12 +787,25 @@ function draftFromPrivate(puzzle) {
     hints: (puzzle.hints || []).join('\n'),
     sequenceName: puzzle.public.sequenceName || '',
     sequenceOrder: puzzle.public.sequenceOrder || 1,
+    participationMode: puzzle.public.participationMode || 'shared',
+    allowedPlayerIds: puzzle.public.allowedPlayerIds || [],
     editorMode: 'advanced',
   };
   if (puzzle.type === 'lock') {
     if (puzzle.public.config.mode === 'deduction') Object.assign(draft, { lockMode: 'deduction', diceCount: puzzle.public.config.diceCount, diceSides: puzzle.public.config.diceSides, diceAnswer: (puzzle.secret.combination || []).join(', '), feedbackMode: puzzle.public.config.feedbackMode });
     else Object.assign(draft, { answer: puzzle.secret.code, lockMode: puzzle.public.config.mode });
   }
+  if (puzzle.type === 'frequency') Object.assign(draft, {
+    frequencyMin:puzzle.public.config.frequencyMin, frequencyMax:puzzle.public.config.frequencyMax,
+    frequencyStep:puzzle.public.config.frequencyStep, frequencyTarget:puzzle.secret.targetFrequency,
+    frequencyTolerance:puzzle.secret.frequencyTolerance,
+    frequencyChannels:(puzzle.public.config.channels||[]).map((c)=>c.label).join(', '),
+    frequencyTargetChannel:puzzle.public.config.channels.find((c)=>c.id===puzzle.secret.targetChannelId)?.label||'',
+    frequencyUseAmplitude:puzzle.secret.useAmplitude?'yes':'no',
+    frequencyAmplitudeMin:puzzle.public.config.amplitudeMin, frequencyAmplitudeMax:puzzle.public.config.amplitudeMax,
+    frequencyAmplitudeStep:puzzle.public.config.amplitudeStep, frequencyAmplitudeTarget:puzzle.secret.targetAmplitude,
+    frequencyAmplitudeTolerance:puzzle.secret.amplitudeTolerance, frequencyInterference:puzzle.public.config.interference,
+  });
   if (puzzle.type === 'social') Object.assign(draft, { socialMode: puzzle.public.config.mode, requiredAnswers: puzzle.public.config.requiredAnswers, socialQuestions: (puzzle.secret.questions || []).map((question) => `${question.prompt} | ${question.answers?.[0] || ''} | ${(question.answers || []).slice(1).join(';')}`).join('\n') });
   if (puzzle.type === 'terminal') Object.assign(draft, { username: puzzle.secret.username, password: puzzle.secret.password, acceptedCommands: (puzzle.secret.commands || []).join('\n'), terminalLabel: puzzle.public.config.terminalLabel });
   if (puzzle.type === 'cipher') Object.assign(draft, { answer: puzzle.secret.solution, cipherText: puzzle.public.config.cipherText, cipherMethod: puzzle.public.config.method, shift: puzzle.public.config.shift });
@@ -676,6 +831,21 @@ function validateEditor(values) {
       if (![4, 6, 8, 10, 12].includes(sides)) return 'Escolha D4, D6, D8, D10 ou D12.';
       if (combination.length !== count || combination.some((value) => !Number.isInteger(value) || value < 1 || value > sides)) return `Informe exatamente ${count} valores inteiros entre 1 e ${sides}, na ordem correta.`;
     } else if (!values.answer?.trim()) return 'Informe a combinação correta do cadeado.';
+  }
+  if (values.type === 'frequency') {
+    const min=Number(values.frequencyMin), max=Number(values.frequencyMax), step=Number(values.frequencyStep), target=Number(values.frequencyTarget), tol=Number(values.frequencyTolerance??0.5);
+    const channels=String(values.frequencyChannels||'').split(/[\\n,;]+/).map(v=>v.trim()).filter(Boolean);
+    if (![min,max,step,target,tol].every(Number.isFinite)) return 'Preencha os valores de frequência com números válidos.';
+    if (max<=min || step<=0 || step>max-min) return 'A faixa ou o intervalo de sintonia é inválido.';
+    if (target<min || target>max) return 'A frequência secreta precisa estar dentro da faixa configurada.';
+    if (tol<0 || tol>max-min) return 'A tolerância da frequência é inválida.';
+    if (!channels.length) return 'Adicione pelo menos um canal.';
+    if (!channels.some(v=>normalizeName(v)===normalizeName(values.frequencyTargetChannel))) return 'O canal correto precisa corresponder a um dos canais disponíveis.';
+    if (values.frequencyUseAmplitude==='yes') {
+      const amin=Number(values.frequencyAmplitudeMin??0), amax=Number(values.frequencyAmplitudeMax??100), astep=Number(values.frequencyAmplitudeStep??1), atarget=Number(values.frequencyAmplitudeTarget??65), atol=Number(values.frequencyAmplitudeTolerance??5);
+      if (![amin,amax,astep,atarget,atol].every(Number.isFinite)) return 'Preencha os valores de amplitude com números válidos.';
+      if (amax<=amin || astep<=0 || astep>amax-amin || atarget<amin || atarget>amax || atol<0 || atol>amax-amin) return 'A faixa, amplitude secreta ou tolerância está inválida.';
+    }
   }
   if (values.type === 'social') {
     const questions = String(values.socialQuestions || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => line.split('|').map((part) => part.trim()));
@@ -717,6 +887,8 @@ async function onSubmit(event) {
     try {
       const puzzle = makePuzzle({
         ...values,
+        participationMode: values.participationMode || 'shared',
+        allowedPlayerIds: values.allowedPlayerIds || [],
         title: safeText(values.title, 80),
         description: safeText(values.description, 300),
         instructions: safeText(values.instructions, 400),
@@ -753,6 +925,10 @@ async function onSubmit(event) {
   if (formType === 'attempt-social') {
     const values = readForm(form);
     return submitPayload({ questionIndex: Number(values.questionIndex), answer: safeText(values.answer, 160) });
+  }
+  if (formType === 'attempt-frequency') {
+    const values=readForm(form);
+    return submitPayload({frequency:Number(values.frequency),channelId:safeText(values.channelId,40),...(values.amplitude!==undefined?{amplitude:Number(values.amplitude)}:{})});
   }
   if (formType === 'attempt-terminal') {
     const values = readForm(form);
@@ -840,6 +1016,7 @@ function onClick(event) {
       target.public.solvedQuestionIds = [];
       target.public.reveal = null;
       target.public.revealedHints = [];
+      target.public.playerProgress = {};
     }
     recalculateSequenceLocks(state.privatePuzzles);
     saveAndPublish(); return setNotice(sequenceName ? `Etapa e etapas seguintes reiniciadas (${targets.length}).` : 'Progresso do enigma reiniciado.', 'success');
@@ -856,11 +1033,11 @@ function onClick(event) {
     return;
   }
   if (action === 'clear-lock') { const input = root.querySelector('[data-lock-input]'); if (input) input.value = ''; return; }
-  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); return render(); }
+  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `montando sequência: ${state.sequence.join(' ')}`); return render(); }
   if (action === 'sequence-remove') { state.sequence.splice(Number(button.dataset.index), 1); return render(); }
   if (action === 'sequence-clear') { state.sequence = []; return render(); }
   if (action === 'submit-sequence') { const value = [...state.sequence]; state.sequence = []; return submitPayload({ value }); }
-  if (action === 'select-wire') { state.selectedWireId = id; return render(); }
+  if (action === 'select-wire') { state.selectedWireId = id; const wire = getSelectedPuzzle()?.config?.wires?.find((item) => item.id === id); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `selecionou o fio ${wire?.label || ''}`); return render(); }
   if (action === 'submit-wire') { const value = state.selectedWireId; state.selectedWireId = null; return submitPayload({ value }); }
   if (action === 'move-fragment') {
     const puzzle = getSelectedPuzzle();
@@ -880,10 +1057,28 @@ function onClick(event) {
   }
   if (action === 'toggle-switch') {
     const index = Number(button.dataset.index);
-    state.switches[index] = !state.switches[index]; return render();
+    state.switches[index] = !state.switches[index];
+    if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, `interruptores: ${state.switches.map((bit) => bit ? '1' : '0').join('')}`);
+    return render();
   }
   if (action === 'submit-switches') { const value = [...state.switches]; return submitPayload({ value }); }
   if (action === 'export-backup') return exportBackup();
+}
+
+function onInput(event) {
+  if (state.connected && state.role === 'PLAYER' && event.target.closest('form[data-form^="attempt-"]')) {
+    if (event.target.matches('[data-frequency-range]')) sendActivity(getSelectedPuzzle()?.id, `sintonizando em ${Number(event.target.value).toFixed(1)} MHz`);
+    else if (event.target.matches('[data-amplitude-range]')) sendActivity(getSelectedPuzzle()?.id, `ajustando amplitude para ${Number(event.target.value)}%`);
+    else sendActivity(getSelectedPuzzle()?.id, 'preenchendo os controles do enigma');
+  }
+  if (event.target.matches('[data-frequency-range]')) {
+    const out=root.querySelector('[data-frequency-value]');
+    if (out) out.textContent=`${Number(event.target.value).toFixed(1).replace('.',',')} MHz`;
+  }
+  if (event.target.matches('[data-amplitude-range]')) {
+    const out=root.querySelector('[data-amplitude-value]');
+    if (out) out.textContent=`${Number(event.target.value).toLocaleString('pt-BR')}%`;
+  }
 }
 
 function onChange(event) {
@@ -891,7 +1086,7 @@ function onChange(event) {
     state.cipherOffset = Number(event.target.value) || 0;
     return render();
   }
-  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode]')) {
+  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode], [data-editor-frequency-amplitude], [data-editor-participation-mode]')) {
     const form = event.target.closest('form');
     const values = readForm(form);
     const type = event.target.matches('[data-editor-type]') ? event.target.value : (values.type || state.editorDraft?.type || 'lock');
@@ -945,6 +1140,7 @@ async function importBackup(file) {
 root.addEventListener('click', onClick);
 root.addEventListener('submit', onSubmit);
 root.addEventListener('change', onChange);
+root.addEventListener('input', onInput);
 root.addEventListener('dragstart', (event) => {
   const row = event.target.closest('[data-fragment-row]');
   if (!row) return;
@@ -967,6 +1163,7 @@ root.addEventListener('drop', (event) => {
   const to = state.fragmentOrder.indexOf(targetRow.dataset.fragmentId);
   if (from >= 0 && to >= 0) {
     state.fragmentOrder.splice(to, 0, state.fragmentOrder.splice(from, 1)[0]);
+    if (state.connected && state.role === 'PLAYER') sendActivity(puzzle?.id, 'reorganizando o documento');
     render();
   }
   state.draggedFragmentId = null;

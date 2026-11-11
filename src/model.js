@@ -10,6 +10,23 @@ export const PUZZLE_TYPES = [
   { id: 'social', label: 'Hack Social', description: 'Descubra informações pessoais para acessar um sistema' },
 ];
 
+export const PARTICIPATION_MODES = [
+  { id: 'shared', label: 'Compartilhado', description: 'Todos veem o mesmo estado e podem interagir.' },
+  { id: 'individual', label: 'Individual', description: 'Cada jogador tem seu próprio progresso.' },
+  { id: 'controlled', label: 'Colaborativo com controle', description: 'Todos acompanham, mas só jogadores autorizados podem interagir.' },
+];
+
+export function normalizeParticipationMode(value) {
+  return PARTICIPATION_MODES.some((mode) => mode.id === value) ? value : 'shared';
+}
+
+export function canPlayerInteract(puzzle, playerId, role = 'PLAYER') {
+  if (role === 'GM') return true;
+  const mode = normalizeParticipationMode(puzzle?.participationMode);
+  if (mode !== 'controlled') return true;
+  return Array.isArray(puzzle?.allowedPlayerIds) && puzzle.allowedPlayerIds.includes(String(playerId || ''));
+}
+
 export const ERROR_EFFECTS = [
   { id: 'none', label: 'Sem consequência' },
   { id: 'clock', label: 'Avançar relógio' },
@@ -154,6 +171,10 @@ export function makePuzzle(values, previous = null) {
   const sequenceOrder = Math.max(1, Math.min(99, Number(values.sequenceOrder) || 1));
   const oldPublic = previous?.public || {};
   const oldSecret = previous?.secret || {};
+  const participationMode = normalizeParticipationMode(values.participationMode ?? oldPublic.participationMode);
+  const rawAllowedPlayerIds = values.allowedPlayerIds ?? oldPublic.allowedPlayerIds ?? [];
+  const allowedPlayerIds = [...new Set((Array.isArray(rawAllowedPlayerIds) ? rawAllowedPlayerIds : String(rawAllowedPlayerIds).split(','))
+    .map((id) => String(id).trim()).filter(Boolean))].slice(0, 50);
   const type = values.type || previous?.type || 'lock';
   let secret = {};
   let config = {};
@@ -383,6 +404,9 @@ export function makePuzzle(values, previous = null) {
     sequenceName,
     sequenceOrder,
     sequenceLocked: Boolean(oldPublic.sequenceLocked),
+    participationMode,
+    allowedPlayerIds: participationMode === 'controlled' ? allowedPlayerIds : [],
+    playerProgress: participationMode === 'individual' && oldPublic.playerProgress && typeof oldPublic.playerProgress === 'object' ? oldPublic.playerProgress : {},
     updatedAt: Date.now(),
   };
 
@@ -398,6 +422,7 @@ export function makePuzzle(values, previous = null) {
     publicPuzzle.reveal = null;
     publicPuzzle.revealedHints = [];
     publicPuzzle.sequenceLocked = false;
+    publicPuzzle.playerProgress = {};
   }
 
   return { id, type, title, secret: Object.keys(secret).length ? secret : oldSecret, reward, hints, public: publicPuzzle };
@@ -757,6 +782,7 @@ export function toPublicState(privatePuzzles, updatedAt = Date.now()) {
       ...puzzle.public,
       // The reward is intentionally absent until the master validates a correct attempt.
       reveal: puzzle.public.solved ? puzzle.reward : null,
+      playerProgress: puzzle.public.playerProgress || {},
     })),
   };
 }

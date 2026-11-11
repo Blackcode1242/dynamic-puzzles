@@ -11,6 +11,9 @@ import {
   PUZZLE_TEMPLATES,
   getPuzzleTemplate,
   createDemoPuzzles,
+  PARTICIPATION_MODES,
+  normalizeParticipationMode,
+  canPlayerInteract,
 } from '../src/model.js';
 
 function makeFrequency(overrides = {}) {
@@ -516,4 +519,49 @@ test('uma sequência com lacuna ou sem etapa 1 permanece bloqueada', () => {
 
   assert.equal(second.public.sequenceLocked, true);
   assert.equal(fourth.public.sequenceLocked, true);
+});
+
+
+test('modos de participação têm padrão compartilhado e permissões controladas', () => {
+  assert.deepEqual(PARTICIPATION_MODES.map((mode) => mode.id), ['shared', 'individual', 'controlled']);
+  assert.equal(normalizeParticipationMode('desconhecido'), 'shared');
+  assert.equal(canPlayerInteract({ participationMode: 'shared' }, 'player-1'), true);
+  assert.equal(canPlayerInteract({ participationMode: 'individual' }, 'player-1'), true);
+  assert.equal(canPlayerInteract({ participationMode: 'controlled', allowedPlayerIds: ['player-1'] }, 'player-1'), true);
+  assert.equal(canPlayerInteract({ participationMode: 'controlled', allowedPlayerIds: ['player-1'] }, 'player-2'), false);
+  assert.equal(canPlayerInteract({ participationMode: 'controlled', allowedPlayerIds: [] }, 'player-2', 'GM'), true);
+});
+
+test('modo individual e lista de participantes são publicados sem revelar a solução', () => {
+  const puzzle = makePuzzle({
+    type: 'lock',
+    title: 'Cofre individual',
+    answer: 'senha-super-secreta',
+    participationMode: 'individual',
+    allowedPlayerIds: ['player-1'],
+  });
+  puzzle.public.playerProgress = {
+    'player-1': { attemptsUsed: 2, solved: false },
+  };
+  const publicPuzzle = toPublicState([puzzle]).puzzles[0];
+  const serialized = JSON.stringify(publicPuzzle);
+
+  assert.equal(publicPuzzle.participationMode, 'individual');
+  assert.deepEqual(publicPuzzle.playerProgress['player-1'], { attemptsUsed: 2, solved: false });
+  assert.doesNotMatch(serialized, /senha-super-secreta/);
+  const controlledPuzzle = makePuzzle({
+    type: 'lock',
+    title: 'Cofre controlado',
+    answer: 'outra-senha',
+    participationMode: 'controlled',
+    allowedPlayerIds: ['player-1'],
+  });
+  assert.equal(controlledPuzzle.public.allowedPlayerIds.includes('player-1'), true);
+});
+
+test('trocar de modo não carrega o progresso individual para modo compartilhado', () => {
+  const individual = makePuzzle({ type: 'lock', title: 'Teste', answer: '1234', participationMode: 'individual' });
+  individual.public.playerProgress = { 'player-1': { attemptsUsed: 3 } };
+  const shared = makePuzzle({ type: 'lock', title: 'Teste', answer: '1234', participationMode: 'shared' }, individual);
+  assert.deepEqual(shared.public.playerProgress, {});
 });
