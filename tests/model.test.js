@@ -572,7 +572,7 @@ test('Altar de Runas configura símbolos, posições e rotações sem publicar o
     type: 'runes',
     runeSymbols: 'ᚠ ᚢ ᚦ ᚨ ᚱ',
     runeGridSize: '3',
-    runePattern: 'ᚠ | 1 | 0\\nᚢ | 3 | 90\\nᚦ | 7 | 180',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180',
   });
   assert.equal(puzzle.public.config.gridSize, 3);
   assert.equal(puzzle.public.config.runes.length, 5);
@@ -591,7 +591,7 @@ test('Altar de Runas exige correspondência exata de símbolo, posição e rota�
     type: 'runes',
     runeSymbols: 'ᚠ ᚢ ᚦ',
     runeGridSize: '2',
-    runePattern: 'ᚠ | 1 | 0\\nᚢ | 4 | 270',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 4 | 270',
   });
   assert.equal(evaluateAttempt(puzzle, { placements: [
     { runeId: 'rune-0', position: 0, rotation: 0 },
@@ -612,7 +612,7 @@ test('Altar de Runas rejeita posições duplicadas, runas duplicadas e valores i
     type: 'runes',
     runeSymbols: 'ᚠ ᚢ ᚦ',
     runeGridSize: '2',
-    runePattern: 'ᚠ | 1 | 0\\nᚢ | 4 | 90',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 4 | 90',
   });
   const invalid = evaluateAttempt(puzzle, { placements: [
     { runeId: 'rune-0', position: 0, rotation: 0 },
