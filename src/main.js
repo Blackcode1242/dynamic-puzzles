@@ -11,11 +11,14 @@ import {
   PUZZLE_TEMPLATES,
   getPuzzleTemplate,
   recalculateSequenceLocks,
+  PARTICIPATION_MODES,
+  canPlayerInteract,
 } from './model.js';
 import {
   connectToOwlbear,
   publishPublicState,
   submitAttempt as sendRemoteAttempt,
+  sendActivity,
   showNotification,
 } from './obr-bridge.js';
 
@@ -30,6 +33,9 @@ const state = {
   role: 'GM',
   roomId: 'demo-room',
   playerName: 'Mestre (demonstração)',
+  playerId: 'demo-player',
+  partyPlayers: [],
+  activePlayers: {},
   demoMode: true,
   tab: 'room',
   selectedPuzzleId: null,
@@ -95,7 +101,9 @@ function getPrivatePuzzle(id) {
 }
 
 function getSelectedPuzzle() {
-  return getPuzzle(state.selectedPuzzleId) || currentPublicPuzzles()[0] || null;
+  const puzzle = getPuzzle(state.selectedPuzzleId) || currentPublicPuzzles()[0] || null;
+  if (!puzzle || state.role === 'GM' || puzzle.participationMode !== 'individual') return puzzle;
+  return { ...puzzle, ...(puzzle.playerProgress?.[state.playerId] || {}), playerProgress: puzzle.playerProgress || {} };
 }
 
 function setNotice(message, tone = 'info') {
@@ -156,11 +164,15 @@ async function bootstrap() {
     const connection = await connectToOwlbear({
       onPublicState: (publicState) => setPublicState(publicState),
       onAttempt: (request) => queueAttempt(request),
+      onPartyChange: (players) => { state.partyPlayers = players; render(); },
+      onActivity: (activity) => { state.activePlayers[activity.playerId] = activity; render(); },
     });
     state.connected = connection.connected;
     state.role = connection.role;
     state.roomId = connection.roomId;
     state.playerName = connection.playerName || 'Jogador';
+    state.playerId = connection.playerId || 'demo-player';
+    state.partyPlayers = connection.partyPlayers || [];
     state.demoMode = !connection.connected;
     state.playerNameDraft = state.playerName;
 
@@ -202,12 +214,16 @@ async function bootstrap() {
   }
 }
 
-function recordAttempt(privatePuzzle, payload, actor) {
-  const publicPuzzle = privatePuzzle.public;
+function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
+  const individual = privatePuzzle.public.participationMode === 'individual';
+  const storedPublic = privatePuzzle.public;
+  const playerProgress = individual ? (storedPublic.playerProgress?.[playerId] || {}) : null;
+  const workingPuzzle = individual ? { ...privatePuzzle, public: { ...storedPublic, attemptsUsed: playerProgress.attemptsUsed || 0, consequenceCount: playerProgress.consequenceCount || 0, clockCount: playerProgress.clockCount || 0, alarmCount: playerProgress.alarmCount || 0, solved: Boolean(playerProgress.solved), locked: Boolean(playerProgress.locked), questionIndex: playerProgress.questionIndex || 0, solvedQuestionIds: playerProgress.solvedQuestionIds || [], history: storedPublic.history || [], reveal: playerProgress.solved ? privatePuzzle.reward : null } } : privatePuzzle;
+  const publicPuzzle = workingPuzzle.public;
   if (publicPuzzle.sequenceLocked) return { ok: false, solved: false, message: 'Esta etapa ainda depende da conclusão do enigma anterior.' };
   if (publicPuzzle.solved) return { ok: false, solved: false, message: 'Este enigma já foi resolvido.' };
   if (publicPuzzle.locked) return { ok: false, solved: false, message: 'Este enigma está bloqueado. Peça ao mestre para reiniciá-lo.' };
-  const evaluation = evaluateAttempt(privatePuzzle, payload);
+  const evaluation = evaluateAttempt(workingPuzzle, payload);
   const correct = evaluation.correct;
   const solved = evaluation.solved;
   if (evaluation.progressUpdate) {
@@ -216,7 +232,7 @@ function recordAttempt(privatePuzzle, payload, actor) {
   }
   // No Hack Social, respostas corretas avançam o progresso; o limite conta apenas erros.
   if (privatePuzzle.type !== 'social' || !correct) publicPuzzle.attemptsUsed += 1;
-  const submitted = attemptLabel(privatePuzzle, payload).slice(0, 110);
+  const submitted = attemptLabel(workingPuzzle, payload).slice(0, 110);
   const entry = {
     id: crypto.randomUUID(),
     actor: safeText(actor || 'Jogador', 48),
@@ -242,6 +258,11 @@ function recordAttempt(privatePuzzle, payload, actor) {
     }
   }
 
+  if (individual) {
+    storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, reveal: publicPuzzle.solved ? privatePuzzle.reward : null, updatedAt: Date.now() } };
+    storedPublic.attemptsUsed = Object.values(storedPublic.playerProgress).reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
+    storedPublic.updatedAt = Date.now();
+  }
   const message = solved
     ? `Enigma resolvido: ${privatePuzzle.title}`
     : correct
@@ -256,7 +277,9 @@ async function processAttempt(request) {
   if (state.role !== 'GM') return;
   const privatePuzzle = getPrivatePuzzle(request?.puzzleId);
   if (!privatePuzzle) return;
-  const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador');
+  const playerId = request.playerId || `unknown-${safeText(request.playerName, 30)}`;
+  if (!canPlayerInteract(privatePuzzle.public, playerId, 'PLAYER')) { setNotice(`${request.playerName || 'O jogador'} tentou interagir sem permissão neste enigma.`, 'warning'); return; }
+  const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador', playerId);
   recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   if (state.connected) showNotification(result.message, result.ok ? 'SUCCESS' : 'WARNING');
@@ -275,6 +298,7 @@ async function submitPayload(payload) {
     return;
   }
 
+  if (state.role === 'PLAYER' && !canPlayerInteract(puzzle, state.playerId, state.role)) { setNotice('Este enigma está em modo colaborativo com controle. Aguarde o mestre liberar sua participação.', 'warning'); return; }
   if (state.connected && state.role === 'PLAYER') {
     try {
       await sendRemoteAttempt(puzzle.id, payload, state.playerNameDraft || state.playerName);
@@ -291,7 +315,7 @@ async function submitPayload(payload) {
     setNotice('O mestre precisa abrir a extensão no dispositivo onde as respostas privadas foram configuradas.', 'warning');
     return;
   }
-  const result = recordAttempt(privatePuzzle, payload, state.demoMode ? 'Você (teste)' : 'Teste do mestre');
+  const result = recordAttempt(privatePuzzle, payload, state.demoMode ? 'Você (teste)' : 'Teste do mestre', state.playerId);
   recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   setNotice(result.message, result.ok ? 'success' : 'warning');
@@ -360,6 +384,9 @@ function renderRoom() {
 }
 
 function renderPuzzleWorkspace(puzzle) {
+  const canInteract = canPlayerInteract(puzzle, state.playerId, state.role);
+  const modeLabel = PARTICIPATION_MODES.find((mode) => mode.id === (puzzle.participationMode || 'shared'))?.label || 'Compartilhado';
+  const activity = Object.values(state.activePlayers).filter((item) => item.puzzleId === puzzle.id && Date.now() - item.at < 12000);
   const consequence = [];
   if (puzzle.clockCount) consequence.push(`<span class="counter counter-clock">◷ Relógio +${puzzle.clockCount}</span>`);
   if (puzzle.alarmCount) consequence.push(`<span class="counter counter-alarm">♢ Alarmes ${puzzle.alarmCount}</span>`);
@@ -367,16 +394,17 @@ function renderPuzzleWorkspace(puzzle) {
   const attemptsLabel = puzzle.attemptLimit > 0 ? `${puzzle.attemptsUsed} / ${puzzle.attemptLimit}` : `${puzzle.attemptsUsed} / ∞`;
   return `
     <div class="puzzle-heading-row">
-      <div><span class="eyebrow">${escapeHtml(TYPE_LABELS[puzzle.type] || 'ENIGMA')} · DESAFIO ATIVO</span><h1>${escapeHtml(puzzle.title)}</h1></div>
+      <div><span class="eyebrow">${escapeHtml(TYPE_LABELS[puzzle.type] || 'ENIGMA')} · ${escapeHtml(modeLabel.toUpperCase())}</span><h1>${escapeHtml(puzzle.title)}</h1></div>
       ${statusChip(puzzle)}
     </div>
     ${puzzle.description ? `<p class="puzzle-description">${escapeHtml(puzzle.description)}</p>` : ''}
     <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}${puzzle.sequenceName ? `<span class="counter counter-sequence">▤ ${escapeHtml(puzzle.sequenceName)} · etapa ${puzzle.sequenceOrder}</span>` : ''}</div>
     ${renderRevealedHints(puzzle)}
+    ${activity.length ? `<div class="multiplayer-activity"><span class="live-indicator"></span>${activity.map((item) => `<span>${escapeHtml(item.playerName)} está ${escapeHtml(item.activity)}</span>`).join(' · ')}</div>` : ''}
     <section class="challenge-card">
       <div class="challenge-topline"><span class="challenge-kicker">INTERFACE DO DESAFIO</span><span class="challenge-coord">DP / ${escapeHtml(puzzle.id.slice(0, 5).toUpperCase())}</span></div>
       ${puzzle.instructions ? `<div class="instruction-box"><span class="instruction-icon">✧</span><p>${escapeHtml(puzzle.instructions)}</p></div>` : ''}
-      ${puzzle.sequenceLocked ? renderSequenceWaiting(puzzle) : puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
+      ${!canInteract && state.role === 'PLAYER' ? '<div class="result-panel result-locked"><div class="result-icon">⌑</div><div><span class="eyebrow">AGUARDANDO AUTORIZAÇÃO</span><h2>Você está acompanhando</h2><p>O mestre ainda não liberou sua interação neste enigma.</p></div></div>' : puzzle.sequenceLocked ? renderSequenceWaiting(puzzle) : puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
     </section>
     ${renderHistory(puzzle)}
   `;
@@ -530,7 +558,8 @@ function historyFeedbackText(feedback) {
 
 function renderHistory(puzzle) {
   const history = [...(puzzle.history || [])].reverse();
-  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>Histórico de tentativas</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
+  const historyLabel = puzzle.participationMode === 'individual' ? 'Histórico de tentativas da sala' : 'Histórico de tentativas';
+  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>${historyLabel}</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
 }
 
 function renderGuide() {
@@ -575,6 +604,9 @@ function renderEditor() {
       ? PUZZLE_TEMPLATES.find((item) => item.id === 'lock-wheel')
       : (PUZZLE_TEMPLATES.find((item) => item.type === type && !['lock-dice', 'lock-wheel'].includes(item.id)) || PUZZLE_TEMPLATES.find((item) => item.type === type));
   const typeOptions = PUZZLE_TYPES.map((item) => `<option value="${item.id}" ${type === item.id ? 'selected' : ''}>${item.label}</option>`).join('');
+  const participationMode = draft.participationMode || 'shared';
+  const allowedIds = Array.isArray(draft.allowedPlayerIds) ? draft.allowedPlayerIds : [];
+  const participantOptions = state.partyPlayers.filter((player) => player.role !== 'GM').map((player) => `<label class="multiplayer-player-option"><input type="checkbox" name="allowedPlayerIds" value="${escapeHtml(player.id)}" ${allowedIds.includes(player.id) ? 'checked' : ''}/><span>${escapeHtml(player.name)}</span></label>`).join('');
   const hiddenAdvanced = advanced ? '' : `
     <input type="hidden" name="attemptLimit" value="${escapeHtml(draft.attemptLimit ?? 0)}" />
     <input type="hidden" name="errorEffect" value="${escapeHtml(draft.errorEffect || 'none')}" />
@@ -585,6 +617,11 @@ function renderEditor() {
     <section class="editor-mode-card"><div><span class="eyebrow">NÍVEL DE CONFIGURAÇÃO</span><h3>${advanced ? 'Opções avançadas' : 'Configuração simples'}</h3><p>${advanced ? 'Personalize regras, dicas e encadeamento entre desafios.' : 'Configure o necessário para colocar o enigma em jogo. Você pode aprofundar depois.'}</p></div><div class="editor-mode-actions"><button type="button" class="mode-choice ${!advanced ? 'active' : ''}" data-action="editor-mode-simple">Simples</button><button type="button" class="mode-choice ${advanced ? 'active' : ''}" data-action="editor-mode-advanced">Avançado</button></div></section>
     <section class="editor-template-strip"><div class="editor-template-preview"><span class="eyebrow">DEMONSTRAÇÃO · ${escapeHtml(template?.label || 'ENIGMA')}</span><strong>${escapeHtml(template?.preview || 'Modelo de exemplo')}</strong><small>${escapeHtml(template?.description || '')}</small></div><button class="button button-quiet" type="button" data-action="load-template">Carregar exemplo deste tipo</button><button class="button button-quiet" type="button" data-action="tab-library">Ver todos os modelos</button></section>
     <div class="editor-columns"><div class="editor-main-column">
+      <section class="editor-card multiplayer-editor-card"><div class="editor-card-heading"><span class="editor-icon">◎</span><div><h3>Participação dos jogadores</h3><p>Escolha como a mesa interage com este enigma.</p></div></div>
+        <label class="form-field"><span>Modo de participação</span><select name="participationMode" data-editor-participation-mode>${PARTICIPATION_MODES.map((mode) => `<option value="${mode.id}" ${participationMode === mode.id ? 'selected' : ''}>${mode.label}</option>`).join('')}</select></label>
+        <p class="field-help">${PARTICIPATION_MODES.find((mode) => mode.id === participationMode)?.description || ''}</p>
+        ${participationMode === 'controlled' ? `<div class="multiplayer-player-list"><span class="field-label">QUEM PODE INTERAGIR</span>${participantOptions || '<small>Nenhum jogador conectado. Os jogadores aparecerão aqui quando entrarem na sala.</small>'}</div>` : ''}
+      </section>
       <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">◇</span><div><h3>Identidade do desafio</h3><p>O conteúdo apresentado aos jogadores.</p></div></div>
         <label class="form-field"><span>Nome do enigma</span><input name="title" required maxlength="80" value="${escapeHtml(draft.title || '')}" placeholder="Ex.: Cofre da biblioteca" /></label>
         <label class="form-field"><span>Tipo de interação</span><select name="type" data-editor-type>${typeOptions}</select></label>
@@ -685,7 +722,8 @@ function render() {
 }
 
 function readForm(form) {
-  return Object.fromEntries(new FormData(form).entries());
+  const data = new FormData(form);
+  return { ...Object.fromEntries(data.entries()), allowedPlayerIds: data.getAll('allowedPlayerIds') };
 }
 
 function draftFromPrivate(puzzle) {
@@ -702,6 +740,8 @@ function draftFromPrivate(puzzle) {
     hints: (puzzle.hints || []).join('\n'),
     sequenceName: puzzle.public.sequenceName || '',
     sequenceOrder: puzzle.public.sequenceOrder || 1,
+    participationMode: puzzle.public.participationMode || 'shared',
+    allowedPlayerIds: puzzle.public.allowedPlayerIds || [],
     editorMode: 'advanced',
   };
   if (puzzle.type === 'lock') {
@@ -800,6 +840,8 @@ async function onSubmit(event) {
     try {
       const puzzle = makePuzzle({
         ...values,
+        participationMode: values.participationMode || 'shared',
+        allowedPlayerIds: values.allowedPlayerIds || [],
         title: safeText(values.title, 80),
         description: safeText(values.description, 300),
         instructions: safeText(values.instructions, 400),
@@ -943,11 +985,11 @@ function onClick(event) {
     return;
   }
   if (action === 'clear-lock') { const input = root.querySelector('[data-lock-input]'); if (input) input.value = ''; return; }
-  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); return render(); }
+  if (action === 'sequence-add') { if (state.sequence.length < 16) state.sequence.push(button.dataset.symbol); if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'montando a sequência'); return render(); }
   if (action === 'sequence-remove') { state.sequence.splice(Number(button.dataset.index), 1); return render(); }
   if (action === 'sequence-clear') { state.sequence = []; return render(); }
   if (action === 'submit-sequence') { const value = [...state.sequence]; state.sequence = []; return submitPayload({ value }); }
-  if (action === 'select-wire') { state.selectedWireId = id; return render(); }
+  if (action === 'select-wire') { state.selectedWireId = id; if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'escolhendo um fio'); return render(); }
   if (action === 'submit-wire') { const value = state.selectedWireId; state.selectedWireId = null; return submitPayload({ value }); }
   if (action === 'move-fragment') {
     const puzzle = getSelectedPuzzle();
@@ -967,7 +1009,9 @@ function onClick(event) {
   }
   if (action === 'toggle-switch') {
     const index = Number(button.dataset.index);
-    state.switches[index] = !state.switches[index]; return render();
+    state.switches[index] = !state.switches[index];
+    if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'ajustando os interruptores');
+    return render();
   }
   if (action === 'submit-switches') { const value = [...state.switches]; return submitPayload({ value }); }
   if (action === 'export-backup') return exportBackup();
@@ -989,7 +1033,7 @@ function onChange(event) {
     state.cipherOffset = Number(event.target.value) || 0;
     return render();
   }
-  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode], [data-editor-frequency-amplitude]')) {
+  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode], [data-editor-frequency-amplitude], [data-editor-participation-mode]')) {
     const form = event.target.closest('form');
     const values = readForm(form);
     const type = event.target.matches('[data-editor-type]') ? event.target.value : (values.type || state.editorDraft?.type || 'lock');
@@ -1066,6 +1110,7 @@ root.addEventListener('drop', (event) => {
   const to = state.fragmentOrder.indexOf(targetRow.dataset.fragmentId);
   if (from >= 0 && to >= 0) {
     state.fragmentOrder.splice(to, 0, state.fragmentOrder.splice(from, 1)[0]);
+    if (state.connected && state.role === 'PLAYER') sendActivity(puzzle?.id, 'reorganizando o documento');
     render();
   }
   state.draggedFragmentId = null;
