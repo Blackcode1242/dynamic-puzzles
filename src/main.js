@@ -296,6 +296,7 @@ async function processAttempt(request) {
 async function submitPayload(payload) {
   const puzzle = getSelectedPuzzle();
   if (!puzzle) return;
+  if (state.connected && state.role === 'PLAYER') sendActivity(puzzle.id, 'enviando uma tentativa');
   if (puzzle.sequenceLocked && state.role === 'PLAYER') {
     setNotice('Esta etapa será liberada quando o enigma anterior da sequência for resolvido.', 'warning');
     return;
