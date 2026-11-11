@@ -1,10 +1,10 @@
 {
   "name": "Dynamic Puzzles",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "manifest_version": 1,
-  "author": "Blackcode1242",
-  "description": "Crie e compartilhe enigmas interativos com seus jogadores.",
+  "description": "Cadeados por dados, Hack Social e outros enigmas interativos para Owlbear Rodeo.",
   "icon": "https://blackcode1242.github.io/dynamic-puzzles/icon.svg",
+  "author": "Dynamic Puzzles",
   "action": {
     "title": "Dynamic Puzzles",
     "icon": "https://blackcode1242.github.io/dynamic-puzzles/icon.svg",

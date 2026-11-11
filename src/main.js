@@ -4,7 +4,7 @@ import {
   ERROR_EFFECTS,
   DEFAULT_SYMBOLS,
   makePuzzle,
-  validateAttempt,
+  evaluateAttempt,
   attemptLabel,
   toPublicState,
   createDemoPuzzles,
@@ -200,26 +200,34 @@ async function bootstrap() {
 
 function recordAttempt(privatePuzzle, payload, actor) {
   const publicPuzzle = privatePuzzle.public;
-  if (publicPuzzle.solved) return { ok: false, message: 'Este enigma já foi resolvido.' };
-  if (publicPuzzle.locked) return { ok: false, message: 'Este enigma está bloqueado. Peça ao mestre para reiniciá-lo.' };
-  const correct = validateAttempt(privatePuzzle, payload);
-  publicPuzzle.attemptsUsed += 1;
+  if (publicPuzzle.solved) return { ok: false, solved: false, message: 'Este enigma já foi resolvido.' };
+  if (publicPuzzle.locked) return { ok: false, solved: false, message: 'Este enigma está bloqueado. Peça ao mestre para reiniciá-lo.' };
+  const evaluation = evaluateAttempt(privatePuzzle, payload);
+  const correct = evaluation.correct;
+  const solved = evaluation.solved;
+  if (evaluation.progressUpdate) {
+    publicPuzzle.questionIndex = evaluation.progressUpdate.questionIndex;
+    publicPuzzle.solvedQuestionIds = evaluation.progressUpdate.solvedQuestionIds;
+  }
+  // No Hack Social, respostas corretas avançam o progresso; o limite conta apenas erros.
+  if (privatePuzzle.type !== 'social' || !correct) publicPuzzle.attemptsUsed += 1;
   const submitted = attemptLabel(privatePuzzle, payload).slice(0, 110);
   const entry = {
     id: crypto.randomUUID(),
     actor: safeText(actor || 'Jogador', 48),
     submitted,
-    result: correct ? 'success' : 'failure',
+    result: solved ? 'success' : correct ? 'progress' : 'failure',
+    feedback: evaluation.feedback || null,
     at: Date.now(),
   };
   publicPuzzle.history = [...(publicPuzzle.history || []), entry].slice(-15);
   publicPuzzle.updatedAt = Date.now();
 
-  if (correct) {
+  if (solved) {
     publicPuzzle.solved = true;
     publicPuzzle.locked = false;
     publicPuzzle.reveal = privatePuzzle.reward;
-  } else {
+  } else if (!correct) {
     if (publicPuzzle.errorEffect !== 'none') publicPuzzle.consequenceCount += 1;
     if (publicPuzzle.errorEffect === 'clock') publicPuzzle.clockCount += 1;
     if (publicPuzzle.errorEffect === 'alarm') publicPuzzle.alarmCount += 1;
@@ -228,14 +236,15 @@ function recordAttempt(privatePuzzle, payload, actor) {
       publicPuzzle.locked = true;
     }
   }
-  return {
-    ok: correct,
-    message: correct
-      ? `Enigma resolvido: ${privatePuzzle.title}`
+
+  const message = solved
+    ? `Enigma resolvido: ${privatePuzzle.title}`
+    : correct
+      ? evaluation.feedback?.text || 'Etapa concluída. Continue o desafio.'
       : publicPuzzle.locked
         ? 'Resposta incorreta. O enigma foi bloqueado.'
-        : 'Resposta incorreta. A consequência foi registrada.',
-  };
+        : evaluation.feedback?.text || 'Resposta incorreta. A consequência foi registrada.';
+  return { ok: correct, solved, message, feedback: evaluation.feedback };
 }
 
 async function processAttempt(request) {
@@ -303,7 +312,7 @@ function renderTabs() {
   return `
     <nav class="tabs" aria-label="Navegação principal">
       <button class="tab ${state.tab === 'room' ? 'active' : ''}" data-action="tab-room"><span class="tab-icon">◈</span> Sala de enigmas</button>
-      ${state.role === 'GM' ? `<button class="tab ${state.tab === 'master' ? 'active' : ''}" data-action="tab-master"><span class="tab-icon">⚙</span> Estúdio do mestre</button>` : ''}
+      ${state.role === 'GM' ? `<button class="tab ${state.tab === 'master' ? 'active' : ''}" data-action="tab-master"><span class="tab-icon">⚙</span> Estúdio do mestre</button><button class="tab ${state.tab === 'guide' ? 'active' : ''}" data-action="tab-guide"><span class="tab-icon">☷</span> Guia do mestre</button>` : ''}
     </nav>`;
 }
 
@@ -342,6 +351,7 @@ function renderPuzzleWorkspace(puzzle) {
   const consequence = [];
   if (puzzle.clockCount) consequence.push(`<span class="counter counter-clock">◷ Relógio +${puzzle.clockCount}</span>`);
   if (puzzle.alarmCount) consequence.push(`<span class="counter counter-alarm">♢ Alarmes ${puzzle.alarmCount}</span>`);
+  const attemptsNoun = puzzle.type === 'social' ? 'Erros' : 'Tentativas';
   const attemptsLabel = puzzle.attemptLimit > 0 ? `${puzzle.attemptsUsed} / ${puzzle.attemptLimit}` : `${puzzle.attemptsUsed} / ∞`;
   return `
     <div class="puzzle-heading-row">
@@ -349,7 +359,7 @@ function renderPuzzleWorkspace(puzzle) {
       ${statusChip(puzzle)}
     </div>
     ${puzzle.description ? `<p class="puzzle-description">${escapeHtml(puzzle.description)}</p>` : ''}
-    <div class="puzzle-meta-row"><span>⌁ Tentativas <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}</div>
+    <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}</div>
     <section class="challenge-card">
       <div class="challenge-topline"><span class="challenge-kicker">INTERFACE DO DESAFIO</span><span class="challenge-coord">DP / ${escapeHtml(puzzle.id.slice(0, 5).toUpperCase())}</span></div>
       ${puzzle.instructions ? `<div class="instruction-box"><span class="instruction-icon">✧</span><p>${escapeHtml(puzzle.instructions)}</p></div>` : ''}
@@ -386,15 +396,38 @@ function renderPlayerControls(puzzle) {
     case 'wires': return renderWires(puzzle);
     case 'document': return renderDocument(puzzle);
     case 'switches': return renderSwitches(puzzle);
+    case 'social': return renderSocial(puzzle);
     default: return '<p class="muted">Tipo de enigma não suportado.</p>';
   }
 }
 
 function renderLock(puzzle) {
+  if (puzzle.config.mode === 'deduction') {
+    const count = puzzle.config.diceCount || 4;
+    const sides = puzzle.config.diceSides || 6;
+    const grouped = puzzle.config.feedbackMode === 'grouped';
+    return `<form class="control-form dice-lock-form" data-form="attempt-dice-lock"><div class="dice-lock-summary"><span class="field-label">DEDUÇÃO DA COMBINAÇÃO</span><strong>${count} × D${sides}</strong><small>${grouped ? 'Retorno agrupado · sem revelar posições' : 'Retorno individual · posição por posição'}</small></div><div class="dice-guess-grid">${Array.from({ length: count }, (_, index) => `<label class="dice-guess-cell"><span>DADO ${String(index + 1).padStart(2, '0')}</span><select data-dice-guess aria-label="Palpite do dado ${index + 1}">${Array.from({ length: sides }, (_, face) => `<option value="${face + 1}">${face + 1}</option>`).join('')}</select></label>`).join('')}</div><p class="field-help">Escolha um valor para cada dado. “Alto” indica que o valor secreto é maior que seu palpite; “baixo” indica que é menor. No modo agrupado, só a quantidade de cada resultado é revelada.</p><button class="button button-primary button-wide" type="submit">Testar combinação <span>→</span></button></form>`;
+  }
   if (puzzle.config.mode === 'wheel') {
     return `<form class="control-form" data-form="attempt-lock-wheel"><div class="field-label">AJUSTE OS DISCOS</div><div class="wheel-row">${Array.from({ length: puzzle.config.wheelLength }, (_, index) => `<select class="wheel-select" data-wheel aria-label="Disco ${index + 1}">${'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((symbol) => `<option>${symbol}</option>`).join('')}</select>`).join('')}</div><button class="button button-primary button-wide" type="submit">Confirmar combinação <span>→</span></button></form>`;
   }
   return `<form class="control-form" data-form="attempt-lock"><label class="field-label" for="lock-value">DIGITE A COMBINAÇÃO</label><input id="lock-value" class="code-input" name="value" data-lock-input maxlength="32" autocomplete="off" placeholder="••••••" /><div class="keypad">${'1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((key) => `<button type="button" class="key" data-action="append-key" data-key="${key}">${key}</button>`).join('')}</div><div class="control-actions"><button class="button button-quiet" type="button" data-action="clear-lock">Limpar</button><button class="button button-primary" type="submit">Destravar <span>→</span></button></div></form>`;
+}
+
+function renderSocial(puzzle) {
+  const questions = puzzle.config.questions || [];
+  const required = puzzle.config.requiredAnswers || questions.length;
+  const solvedIds = puzzle.solvedQuestionIds || [];
+  const progress = puzzle.config.mode === 'sequential' ? (puzzle.questionIndex || 0) : solvedIds.length;
+  const investigative = puzzle.config.mode === 'investigative';
+  const available = questions.map((question, index) => ({ ...question, index })).filter((question) => !solvedIds.includes(question.id));
+  if (investigative) {
+    const first = available[0];
+    return `<div class="social-game"><div class="social-progress"><div><span class="field-label">INFORMAÇÕES DESCOBERTAS</span><strong>${progress} / ${required}</strong></div><span class="social-mode-tag">MODO INVESTIGATIVO</span></div><div class="social-question-list">${questions.map((question, index) => `<div class="social-question ${solvedIds.includes(question.id) ? 'answered' : ''}"><span>${String(index + 1).padStart(2, '0')}</span><p>${escapeHtml(question.prompt)}</p><b>${solvedIds.includes(question.id) ? '✓' : '?'}</b></div>`).join('')}</div><form class="control-form" data-form="attempt-social"><label class="form-field"><span>Qual informação você descobriu?</span><select name="questionIndex">${available.map((question) => `<option value="${question.index}" ${question.index === first?.index ? 'selected' : ''}>${String(question.index + 1).padStart(2, '0')} · ${escapeHtml(question.prompt)}</option>`).join('')}</select></label><label class="form-field"><span>Resposta</span><input class="text-input" name="answer" maxlength="160" autocomplete="off" placeholder="Digite a informação que encontrou" required /></label><button class="button button-primary button-wide" type="submit" ${available.length ? '' : 'disabled'}>Confirmar informação <span>→</span></button></form></div>`;
+  }
+  const index = puzzle.questionIndex || 0;
+  const current = questions[index];
+  return `<div class="social-game"><div class="social-progress"><div><span class="field-label">PERGUNTAS RESPONDIDAS</span><strong>${progress} / ${required}</strong></div><span class="social-mode-tag">MODO SEQUENCIAL</span></div>${current ? `<div class="social-current-question"><span class="eyebrow">PERGUNTA ${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(current.prompt)}</h3></div><form class="control-form" data-form="attempt-social"><input type="hidden" name="questionIndex" value="${index}" /><label class="form-field"><span>Resposta</span><input class="text-input" name="answer" maxlength="160" autocomplete="off" placeholder="Digite sua resposta" required /></label><button class="button button-primary button-wide" type="submit">Enviar resposta <span>→</span></button></form>` : '<p class="field-help">Todas as perguntas foram respondidas. O mestre deve liberar o resultado ou reiniciar o desafio.</p>'}</div>`;
 }
 
 function renderTerminal(puzzle) {
@@ -432,9 +465,38 @@ function renderSwitches(puzzle) {
   return `<div class="switch-game"><div class="field-label">PAINEL DE CONTROLE · ${count} CANAIS</div><div class="switch-row">${state.switches.map((enabled, index) => `<button type="button" class="switch-cell ${enabled ? 'on' : ''}" data-action="toggle-switch" data-index="${index}"><span class="switch-track"><i></i></span><b>${String(index + 1).padStart(2, '0')}</b><small>${enabled ? 'LIGADO' : 'DESLIGADO'}</small></button>`).join('')}</div><div class="switch-readout"><span>ESTADO DO CIRCUITO</span><strong>${state.switches.map((bit) => bit ? '1' : '0').join('')}</strong></div><button class="button button-primary button-wide" type="button" data-action="submit-switches">Aplicar combinação <span>→</span></button></div>`;
 }
 
+function historyFeedbackText(feedback) {
+  if (!feedback) return '';
+  if (feedback.text) return feedback.text;
+  if (feedback.mode === 'individual') {
+    const labels = { high: 'alvo acima · aumente', low: 'alvo abaixo · diminua', exact: 'exato' };
+    return (feedback.marks || []).map((mark, index) => `D${index + 1}: ${labels[mark] || mark}`).join('  /  ');
+  }
+  if (feedback.mode === 'grouped' && feedback.counts) {
+    const { high = 0, low = 0, exact = 0 } = feedback.counts;
+    return `${high} valor(es) secreto(s) acima · ${low} abaixo · ${exact} exato(s)`;
+  }
+  return '';
+}
+
 function renderHistory(puzzle) {
   const history = [...(puzzle.history || [])].reverse();
-  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>Histórico de tentativas</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : 'failure'}">${entry.result === 'success' ? '✓' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-submitted">${escapeHtml(entry.submitted)}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
+  return `<section class="history-section"><div class="section-heading"><div><span class="eyebrow">REGISTRO DA SALA</span><h3>Histórico de tentativas</h3></div><span class="history-total">${history.length.toString().padStart(2, '0')} EVENTOS</span></div>${history.length ? `<div class="history-list">${history.map((entry) => `<div class="history-item"><span class="history-result ${entry.result === 'success' ? 'success' : entry.result === 'progress' ? 'progress' : 'failure'}">${entry.result === 'success' ? '✓' : entry.result === 'progress' ? '↗' : '×'}</span><span class="history-player">${escapeHtml(entry.actor)}</span><span class="history-entry-copy"><span class="history-submitted">${escapeHtml(entry.submitted)}</span>${historyFeedbackText(entry.feedback) ? `<small class="history-feedback">${escapeHtml(historyFeedbackText(entry.feedback))}</small>` : ''}</span><span class="history-time">${new Date(entry.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}</div>` : '<p class="history-empty">Nenhuma tentativa registrada. O registro aparecerá aqui para todos os jogadores.</p>'}</section>`;
+}
+
+function renderGuide() {
+  const entries = [
+    ['Cadeado · teclado ou discos', 'Configure uma senha de letras e números. Escolha teclado para digitação ou discos para ajustar cada caractere. Use quando a fechadura tem uma combinação conhecida por pistas, códigos ou documentos.', 'Exemplo: quatro caracteres que aparecem em um diário, data ou etiqueta. O mestre pode limitar tentativas e associar erros a um alarme ou avanço do relógio.'],
+    ['Destrancamento por dados', 'Escolha a quantidade de dados (1 a 20), o tipo (d4, d6, d8, d10 ou d12), a combinação secreta na ordem e o formato de feedback. Cada posição é comparada ao valor secreto daquela mesma posição.', 'Individual: cada dado recebe “acima, diminua”, “abaixo, aumente” ou “exato”. Agrupado: a sala recebe apenas a contagem de resultados acima, abaixo e exatos, sem revelar quais posições acertaram. Exemplo: 4d8 com senha 6-2-7-3. Use o limite de tentativas para representar a resistência da fechadura.'],
+    ['Hack Social', 'Insira uma linha por pergunta no formato: pergunta | resposta | variações. Separe respostas alternativas por ponto e vírgula. Escolha Sequencial para exigir a ordem definida ou Investigativo para permitir que o grupo responda às perguntas em qualquer ordem. Defina quantas informações corretas bastam para liberar o acesso.', 'Exemplo: “Qual o nome do cachorro? | Thor | Thorinho;Trovão”. No modo investigativo, as perguntas ficam visíveis e o grupo escolhe qual informação já descobriu. No sequencial, a próxima pergunta só aparece depois de acertar a atual. O mestre deve validar manualmente o teste inicial de Intuição antes de liberar o minigame, caso queira seguir essa etapa do playtest.'],
+    ['Terminal', 'Configure usuário, senha e/ou comandos permitidos. O jogador pode autenticar com as credenciais ou executar um dos comandos cadastrados.', 'Exemplo: “admin” + senha ou comando “open vault”. Use falhas para disparar alarmes, bloqueios ou relógios de segurança.'],
+    ['Cifra', 'Escolha César, substituição ou roda de cifras. Insira o texto cifrado e a solução que o grupo deve enviar. Nas cifras de César, configure o deslocamento.', 'Exemplo: uma carta interceptada com a mensagem “A CHAVE ESTÁ NO ARMÁRIO”. Dê pistas graduais sobre método e deslocamento.'],
+    ['Sequência de símbolos', 'Defina os símbolos disponíveis e a sequência correta. Os jogadores montam a ordem selecionando os símbolos.', 'Exemplo: um ritual exige Lua → Chama → Pedra → Estrela. A ordem pode vir de inscrições, estações do ano ou anotações encontradas.'],
+    ['Fios coloridos', 'Liste as cores ou identificações dos fios e escolha qual é o correto. Os jogadores selecionam um fio para cortar.', 'Exemplo: um painel de explosivos com quatro fios. Descreva pistas visuais ou documentos que ajudem a deduzir a escolha.'],
+    ['Documento rasgado', 'Escreva cada fragmento em uma linha, já na ordem correta. A extensão embaralha as partes para os jogadores reorganizarem.', 'Exemplo: um bilhete dividido em quatro pedaços que revela a ordem para abrir uma passagem. Não use para informação que o grupo precisa receber obrigatoriamente.'],
+    ['Painel de interruptores', 'Defina uma sequência de 0 e 1: 0 significa desligado e 1 ligado. Use de 2 a 10 interruptores.', 'Exemplo: alinhar cinco alavancas para ativar uma ponte. As marcas no painel, símbolos ou pistas no cenário podem indicar o padrão.'],
+  ];
+  return `<section class="guide-layout"><div class="master-intro"><div><span class="eyebrow">REFERÊNCIA DE MESA</span><h1>Guia do mestre</h1><p>Como preparar, conduzir e encaixar cada minigame na sua campanha.</p></div><button class="button button-quiet" data-action="tab-master">← Voltar ao estúdio</button></div><section class="guide-intro-card"><h2>O papel do minigame na cena</h2><p>Apresente o desafio como parte do cenário, deixe claro o que os personagens podem observar e permita que os jogadores usem as pistas que encontraram. O minigame deve materializar a ação dos personagens, não substituir a investigação nem decidir sozinho o que a história exige.</p><p>Configure antes da sessão o que está em jogo, quantas tentativas são aceitáveis e o que acontece se o grupo falhar. Recompensa pode ser uma pista, documento, item, acesso a uma área ou mudança no cenário.</p></section><div class="guide-grid">${entries.map(([title, setup, example], index) => `<article class="guide-entry"><div class="guide-entry-top"><span>${String(index + 1).padStart(2, '0')}</span><h3>${title}</h3></div><h4>Como configurar</h4><p>${setup}</p><h4>Como usar na campanha</h4><p>${example}</p></article>`).join('')}</div><section class="guide-intro-card"><h2>Tentativas, pressão e consequências</h2><p><b>Limite 0:</b> tentativas ilimitadas. Um limite maior permite experimentação; um limite baixo torna o erro perigoso. Em caso de falha, escolha entre não aplicar consequência, avançar um relógio, disparar um alarme ou bloquear o desafio. O relógio e o alarme são contadores internos da extensão: o mestre ainda decide como isso aparece no mundo do jogo.</p><p><b>Recompensas:</b> o conteúdo configurado só aparece para a sala após a validação do mestre. Use textos curtos, handouts externos ou links HTTPS para entregar a próxima pista.</p><p><b>Jogo em grupo:</b> todas as pessoas da sala podem enviar tentativas. O histórico registra jogador, palpite, feedback e horário. Em desafios de dedução, incentive a mesa a discutir hipóteses antes de gastar tentativas.</p></section><section class="guide-source-note"><span class="eyebrow">REFERÊNCIA DE ORDEM PARANORMAL II</span><p>O Hack Social e o destrancamento por dados foram inspirados nas regras de desafios de acesso do primeiro playtest (seção “Desafios de Acesso”, páginas 24–25). O playtest descreve teste de Intuição antes das perguntas sociais e uma senha de fechadura formada por resultados ordenados; a extensão oferece opções configuráveis para adaptar esses procedimentos à mesa. O segundo playtest apresenta graus de relação e benefícios de apoio como referência narrativa adicional, mas não define a mecânica de Hack Social.</p><p>Esta extensão é independente e não substitui os documentos oficiais. Ela não lê fichas, não realiza testes de perícia automaticamente e não aplica regras específicas de personagem: o mestre faz esses julgamentos durante a sessão.</p></section></section>`;
 }
 
 function renderMaster() {
@@ -447,8 +509,8 @@ function renderMaster() {
     <div class="master-intro"><div><span class="eyebrow">CONTROLE DE CAMPANHA</span><h1>Estúdio do mestre</h1><p>Crie, configure e acompanhe os desafios da sua sala.</p></div><button class="button button-primary" data-action="new-puzzle" ${puzzles.length >= MAX_PUZZLES ? 'disabled' : ''}>＋ Novo enigma</button></div>
     <div class="stats-grid"><div class="stat-card"><span>ENIGMAS CRIADOS</span><strong>${String(puzzles.length).padStart(2, '0')}</strong><small>Limite local: ${MAX_PUZZLES}</small></div><div class="stat-card"><span>RESOLVIDOS</span><strong class="stat-green">${String(solved).padStart(2, '0')}</strong><small>${puzzles.length ? Math.round((solved / puzzles.length) * 100) : 0}% da sala</small></div><div class="stat-card"><span>RELÓGIOS AVANÇADOS</span><strong class="stat-amber">${String(clocks).padStart(2, '0')}</strong><small>Consequências registradas</small></div><div class="stat-card"><span>ALARMES DISPARADOS</span><strong class="stat-red">${String(alarms).padStart(2, '0')}</strong><small>Consequências registradas</small></div></div>
     <div class="master-section-heading"><div><span class="eyebrow">BIBLIOTECA DE DESAFIOS</span><h2>Seus enigmas</h2></div><span class="muted-small">As soluções não são compartilhadas com os jogadores.</span></div>
-    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} tentativa(s)</span><span>${puzzle.public.history.length} eventos</span></div><div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
-    ${puzzles.length ? `<div class="master-footer-actions"><button class="button button-quiet" data-action="seed-demo" ${puzzles.length + 7 > MAX_PUZZLES ? 'disabled' : ''}>＋ Adicionar conjunto de exemplos</button><button class="button button-quiet" data-action="export-backup">Exportar backup privado ↓</button><label class="button button-quiet file-button">Importar backup ↑<input type="file" accept="application/json" data-action="import-backup" hidden /></label></div>` : ''}
+    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} ${puzzle.type === 'social' ? 'erro(s)' : 'tentativa(s)'}</span><span>${puzzle.public.history.length} eventos</span></div><div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
+    ${puzzles.length ? `<div class="master-footer-actions"><button class="button button-quiet" data-action="seed-demo" ${puzzles.length + 11 > MAX_PUZZLES ? 'disabled' : ''}>＋ Adicionar conjunto de exemplos</button><button class="button button-quiet" data-action="export-backup">Exportar backup privado ↓</button><label class="button button-quiet file-button">Importar backup ↑<input type="file" accept="application/json" data-action="import-backup" hidden /></label></div>` : ''}
     <div class="security-note"><span>◈</span><div><strong>Respostas protegidas por separação de dados</strong><p>As soluções e a configuração privada ficam no armazenamento local do navegador do mestre. A sala recebe somente as informações públicas dos desafios e os resultados das tentativas.</p></div></div>
   </section>`;
 }
@@ -473,7 +535,7 @@ function renderEditor() {
       </section>
     </div><aside class="editor-side-column">
       <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⚑</span><div><h3>Regras de tentativa</h3><p>Controle a pressão e as consequências.</p></div></div>
-        <label class="form-field"><span>Limite de tentativas</span><input name="attemptLimit" type="number" min="0" max="99" value="${escapeHtml(draft.attemptLimit ?? 3)}" /><small>Use 0 para tentativas ilimitadas.</small></label>
+        <label class="form-field"><span>${type === 'social' ? 'Limite de respostas incorretas' : 'Limite de tentativas'}</span><input name="attemptLimit" type="number" min="0" max="99" value="${escapeHtml(draft.attemptLimit ?? 3)}" /><small>${type === 'social' ? 'Respostas corretas avançam o progresso sem consumir o limite. Use 0 para erros ilimitados.' : 'Use 0 para tentativas ilimitadas.'}</small></label>
         <label class="form-field"><span>Ao errar, acontece…</span><select name="errorEffect">${ERROR_EFFECTS.map((effect) => `<option value="${effect.id}" ${(draft.errorEffect || 'none') === effect.id ? 'selected' : ''}>${effect.label}</option>`).join('')}</select></label>
         <div class="rule-explainer"><b>Como as consequências funcionam</b><p>Relógio e alarme são contadores compartilhados. Bloqueio imediato encerra novas tentativas até o mestre reiniciar o enigma.</p></div>
       </section>
@@ -485,8 +547,16 @@ function renderEditor() {
 function renderTypeFields(type, draft) {
   const input = (name, label, value, placeholder = '', typeName = 'text') => `<label class="form-field"><span>${label}</span><input name="${name}" type="${typeName}" value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(placeholder)}" /></label>`;
   const textarea = (name, label, value, placeholder = '') => `<label class="form-field"><span>${label}</span><textarea name="${name}" rows="3" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value ?? '')}</textarea></label>`;
-  if (type === 'lock') return `<div class="form-two-columns">${input('answer', 'Resposta correta', draft.answer, 'Ex.: 0482')}
-    <label class="form-field"><span>Tipo de mecanismo</span><select name="lockMode"><option value="keypad" ${(draft.lockMode || 'keypad') === 'keypad' ? 'selected' : ''}>Teclado</option><option value="wheel" ${draft.lockMode === 'wheel' ? 'selected' : ''}>Discos giratórios</option></select></label></div><p class="field-help">O teclado aceita letras e números. Os discos exibem a quantidade de caracteres da resposta.</p>`;
+  if (type === 'lock') {
+    const mode = draft.lockMode || 'keypad';
+    const modeField = `<label class="form-field"><span>Tipo de mecanismo</span><select name="lockMode" data-editor-lock-mode><option value="keypad" ${mode === 'keypad' ? 'selected' : ''}>Teclado</option><option value="wheel" ${mode === 'wheel' ? 'selected' : ''}>Discos giratórios</option><option value="deduction" ${mode === 'deduction' ? 'selected' : ''}>Dedução por dados</option></select></label>`;
+    if (mode === 'deduction') {
+      const sides = Number(draft.diceSides || 6);
+      return `${modeField}<div class="form-two-columns"><label class="form-field"><span>Quantidade de dados</span><input name="diceCount" type="number" min="1" max="20" value="${escapeHtml(draft.diceCount ?? 4)}" /></label><label class="form-field"><span>Tipo de dado</span><select name="diceSides">${[4, 6, 8, 10, 12].map((face) => `<option value="${face}" ${sides === face ? 'selected' : ''}>D${face}</option>`).join('')}</select></label></div>${input('diceAnswer', 'Combinação secreta (na ordem)', draft.diceAnswer || draft.answer, 'Ex.: 4, 3, 2, 1')}<label class="form-field"><span>Formato de feedback</span><select name="feedbackMode"><option value="individual" ${(draft.feedbackMode || 'individual') === 'individual' ? 'selected' : ''}>Individual · cada posição</option><option value="grouped" ${draft.feedbackMode === 'grouped' ? 'selected' : ''}>Agrupado · totais sem posições</option></select></label><p class="field-help">A quantidade pode variar de 1 a 20 dados. Escolha D4, D6, D8, D10 ou D12. Separe os valores secretos por vírgula, na ordem dos dados.</p>`;
+    }
+    return `<div class="form-two-columns">${input('answer', 'Resposta correta', draft.answer, 'Ex.: 0482')}${modeField}</div><p class="field-help">O teclado aceita letras e números. Os discos exibem a quantidade de caracteres da resposta.</p>`;
+  }
+  if (type === 'social') return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor | Thorinho;Trovão&#10;Em que cidade nasceu? | Santos | Santos-SP">${escapeHtml(draft.socialQuestions || '')}</textarea><small>Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.</small></label><label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? 3)}" /></label><p class="field-help">As perguntas ficam visíveis aos jogadores; as respostas e variações permanecem privadas. No modo investigativo, perguntas resolvidas ficam marcadas e não podem ser respondidas novamente.</p>`;
   if (type === 'terminal') return `${input('terminalLabel', 'Identificação do terminal', draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}${input('username', 'Usuário correto', draft.username, 'Ex.: admin')}${input('password', 'Senha correta', draft.password, 'Senha de acesso', 'text')}${textarea('acceptedCommands', 'Comandos aceitos (um por linha)', draft.acceptedCommands, 'help\nopen vault\noverride')}<p class="field-help">O terminal aceita o login correto ou qualquer um dos comandos cadastrados. Os comandos válidos não são exibidos automaticamente.</p>`;
   if (type === 'cipher') return `${textarea('cipherText', 'Texto cifrado', draft.cipherText, 'Ex.: FKR UD QXEV')}${input('answer', 'Texto original / resposta', draft.answer, 'A mensagem decifrada')}
     <div class="form-two-columns"><label class="form-field"><span>Tipo de cifra</span><select name="cipherMethod"><option value="caesar" ${(draft.cipherMethod || 'caesar') === 'caesar' ? 'selected' : ''}>César</option><option value="substitution" ${draft.cipherMethod === 'substitution' ? 'selected' : ''}>Substituição</option><option value="wheel" ${draft.cipherMethod === 'wheel' ? 'selected' : ''}>Roda de cifras</option></select></label>${input('shift', 'Deslocamento (César)', draft.shift ?? 3, '3', 'number')}</div><p class="field-help">O tipo e o deslocamento são mostrados como pistas. A validação compara a mensagem digitada com a resposta.</p>`;
@@ -504,7 +574,7 @@ function renderTypeFields(type, draft) {
 
 function render() {
   if (!root) return;
-  root.innerHTML = `${renderHeader()}${renderTabs()}<div class="app-content">${renderNotice()}${state.tab === 'master' && state.role === 'GM' ? renderMaster() : renderRoom()}</div><footer class="app-footer"><span> DYNAMIC PUZZLES <i>·</i> v0.1.0</span><span>${state.demoMode ? 'Demonstração local — nenhuma sala conectada' : 'Dados sincronizados pela sala do Owlbear Rodeo'}</span></footer>`;
+  root.innerHTML = `${renderHeader()}${renderTabs()}<div class="app-content">${renderNotice()}${state.tab === 'master' && state.role === 'GM' ? renderMaster() : state.tab === 'guide' && state.role === 'GM' ? renderGuide() : renderRoom()}</div><footer class="app-footer"><span> DYNAMIC PUZZLES <i>·</i> v0.2.0</span><span>${state.demoMode ? 'Demonstração local — nenhuma sala conectada' : 'Dados sincronizados pela sala do Owlbear Rodeo'}</span></footer>`;
 }
 
 function readForm(form) {
@@ -523,7 +593,11 @@ function draftFromPrivate(puzzle) {
     rewardContent: puzzle.reward?.content || '',
     rewardUrl: puzzle.reward?.url || '',
   };
-  if (puzzle.type === 'lock') Object.assign(draft, { answer: puzzle.secret.code, lockMode: puzzle.public.config.mode });
+  if (puzzle.type === 'lock') {
+    if (puzzle.public.config.mode === 'deduction') Object.assign(draft, { lockMode: 'deduction', diceCount: puzzle.public.config.diceCount, diceSides: puzzle.public.config.diceSides, diceAnswer: (puzzle.secret.combination || []).join(', '), feedbackMode: puzzle.public.config.feedbackMode });
+    else Object.assign(draft, { answer: puzzle.secret.code, lockMode: puzzle.public.config.mode });
+  }
+  if (puzzle.type === 'social') Object.assign(draft, { socialMode: puzzle.public.config.mode, requiredAnswers: puzzle.public.config.requiredAnswers, socialQuestions: (puzzle.secret.questions || []).map((question) => `${question.prompt} | ${question.answers?.[0] || ''} | ${(question.answers || []).slice(1).join(';')}`).join('\n') });
   if (puzzle.type === 'terminal') Object.assign(draft, { username: puzzle.secret.username, password: puzzle.secret.password, acceptedCommands: (puzzle.secret.commands || []).join('\n'), terminalLabel: puzzle.public.config.terminalLabel });
   if (puzzle.type === 'cipher') Object.assign(draft, { answer: puzzle.secret.solution, cipherText: puzzle.public.config.cipherText, cipherMethod: puzzle.public.config.method, shift: puzzle.public.config.shift });
   if (puzzle.type === 'sequence') Object.assign(draft, { availableSymbols: puzzle.public.config.symbols.join(' '), answerSequence: puzzle.secret.sequence.join(' ') });
@@ -538,7 +612,21 @@ function draftFromPrivate(puzzle) {
 
 function validateEditor(values) {
   if (!values.title?.trim()) return 'Dê um nome ao enigma.';
-  if (values.type === 'lock' && !values.answer?.trim()) return 'Informe a combinação correta do cadeado.';
+  if (values.type === 'lock') {
+    if (values.lockMode === 'deduction') {
+      const count = Number(values.diceCount); const sides = Number(values.diceSides);
+      const combination = String(values.diceAnswer || '').split(/[\s,;.-]+/).filter(Boolean).map(Number);
+      if (!Number.isInteger(count) || count < 1 || count > 20) return 'A quantidade de dados deve ficar entre 1 e 20.';
+      if (![4, 6, 8, 10, 12].includes(sides)) return 'Escolha D4, D6, D8, D10 ou D12.';
+      if (combination.length !== count || combination.some((value) => !Number.isInteger(value) || value < 1 || value > sides)) return `Informe exatamente ${count} valores inteiros entre 1 e ${sides}, na ordem correta.`;
+    } else if (!values.answer?.trim()) return 'Informe a combinação correta do cadeado.';
+  }
+  if (values.type === 'social') {
+    const questions = String(values.socialQuestions || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => line.split('|').map((part) => part.trim()));
+    if (!questions.length || questions.some((parts) => !parts[0] || !parts[1])) return 'Adicione pelo menos uma pergunta com resposta correta. Use pergunta | resposta | variações.';
+    const required = Number(values.requiredAnswers);
+    if (!Number.isInteger(required) || required < 1 || required > questions.length) return `A quantidade necessária deve ficar entre 1 e ${questions.length}.`;
+  }
   if (values.type === 'terminal' && !values.username?.trim() && !values.password?.trim() && !values.acceptedCommands?.trim()) return 'Configure um login ou pelo menos um comando aceito.';
   if (values.type === 'cipher' && (!values.answer?.trim() || !values.cipherText?.trim())) return 'Informe o texto cifrado e a resposta correta.';
   if (values.type === 'sequence' && (!values.answerSequence?.trim() || !values.availableSymbols?.trim())) return 'Configure os símbolos e a sequência correta.';
@@ -590,6 +678,14 @@ async function onSubmit(event) {
     const value = [...form.querySelectorAll('[data-wheel]')].map((select) => select.value).join('');
     return submitPayload({ value });
   }
+  if (formType === 'attempt-dice-lock') {
+    const guess = [...form.querySelectorAll('[data-dice-guess]')].map((select) => Number(select.value));
+    return submitPayload({ guess });
+  }
+  if (formType === 'attempt-social') {
+    const values = readForm(form);
+    return submitPayload({ questionIndex: Number(values.questionIndex), answer: safeText(values.answer, 160) });
+  }
   if (formType === 'attempt-terminal') {
     const values = readForm(form);
     const mode = event.submitter?.dataset.mode || 'login';
@@ -605,6 +701,7 @@ function onClick(event) {
   const id = button.dataset.id;
   if (action === 'tab-room') { state.tab = 'room'; state.notice = ''; return render(); }
   if (action === 'tab-master') { state.tab = 'master'; state.notice = ''; return render(); }
+  if (action === 'tab-guide') { state.tab = 'guide'; state.notice = ''; return render(); }
   if (action === 'dismiss-notice') { state.notice = ''; return render(); }
   if (action === 'select-puzzle') {
     state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.cipherOffset = 0; state.notice = ''; return render();
@@ -636,13 +733,16 @@ function onClick(event) {
     puzzle.public.solved = false;
     puzzle.public.locked = false;
     puzzle.public.history = [];
+    puzzle.public.questionIndex = 0;
+    puzzle.public.solvedQuestionIds = [];
     puzzle.public.reveal = null;
     saveAndPublish(); return setNotice('Progresso do enigma reiniciado.', 'success');
   }
   if (action === 'seed-demo') {
-    if (state.privatePuzzles.length + 7 > MAX_PUZZLES) return setNotice('Não há espaço para adicionar os sete exemplos. Exclua alguns enigmas primeiro.', 'warning');
-    state.privatePuzzles = [...state.privatePuzzles, ...createDemoPuzzles()];
-    saveAndPublish(); return setNotice('Sete exemplos adicionados à biblioteca.', 'success');
+    const examples = createDemoPuzzles();
+    if (state.privatePuzzles.length + examples.length > MAX_PUZZLES) return setNotice(`Não há espaço para adicionar os ${examples.length} exemplos. Exclua alguns enigmas primeiro.`, 'warning');
+    state.privatePuzzles = [...state.privatePuzzles, ...examples];
+    saveAndPublish(); return setNotice(`${examples.length} exemplos adicionados à biblioteca.`, 'success');
   }
   if (action === 'append-key') {
     const input = root.querySelector('[data-lock-input]');
@@ -685,10 +785,11 @@ function onChange(event) {
     state.cipherOffset = Number(event.target.value) || 0;
     return render();
   }
-  if (event.target.matches('[data-editor-type]')) {
+  if (event.target.matches('[data-editor-type], [data-editor-lock-mode], [data-editor-social-mode]')) {
     const form = event.target.closest('form');
     const values = readForm(form);
-    state.editorDraft = { ...state.editorDraft, ...values, type: event.target.value };
+    const type = event.target.matches('[data-editor-type]') ? event.target.value : (values.type || state.editorDraft?.type || 'lock');
+    state.editorDraft = { ...state.editorDraft, ...values, type };
     return render();
   }
   if (event.target.matches('[data-action="import-backup"]')) return importBackup(event.target.files?.[0]);
@@ -697,7 +798,7 @@ function onChange(event) {
 function exportBackup() {
   const data = {
     app: 'Dynamic Puzzles',
-    version: '0.1.0',
+    version: '0.2.0',
     exportedAt: new Date().toISOString(),
     roomHint: state.roomId,
     puzzles: state.privatePuzzles,

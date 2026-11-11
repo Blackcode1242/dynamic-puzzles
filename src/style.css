@@ -339,3 +339,48 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .wheel-control select { padding: 5px 8px; border: 1px solid rgba(248,198,108,.2); border-radius: 5px; color: #e6c994; background: #191a1d; font: 9px var(--mono); }
 .fragment-row { cursor: grab; }
 .fragment-row:active { cursor: grabbing; }
+
+/* Novos desafios: dedução por dados, Hack Social e guia do mestre. */
+.dice-lock-form, .social-game { display: grid; gap: 14px; }
+.dice-lock-summary, .social-progress { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border: 1px solid rgba(167,139,250,.18); border-radius: 7px; background: rgba(167,139,250,.045); }
+.dice-lock-summary { flex-wrap: wrap; }
+.dice-lock-summary strong { margin-left: auto; color: var(--violet-bright); font: 600 16px var(--mono); }
+.dice-lock-summary small { width: 100%; color: #788497; font-size: 9px; }
+.dice-guess-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; }
+.dice-guess-cell { display: grid; gap: 6px; min-width: 0; padding: 9px 7px; border: 1px solid var(--line); border-radius: 7px; text-align: center; background: rgba(0,0,0,.12); }
+.dice-guess-cell span { color: #788497; font: 8px var(--mono); letter-spacing: .08em; }
+.dice-guess-cell select { width: 100%; padding: 9px 4px; border: 1px solid rgba(192,204,229,.17); border-radius: 5px; color: #e8defe; background: #171b26; font: 600 16px var(--mono); text-align: center; }
+.social-progress strong { display: block; margin-top: 5px; color: var(--violet-bright); font: 600 18px var(--mono); }
+.social-mode-tag { padding: 5px 7px; border: 1px solid rgba(103,232,249,.16); border-radius: 20px; color: #86c9cf; font: 8px var(--mono); letter-spacing: .08em; }
+.social-question-list { display: grid; gap: 6px; }
+.social-question { display: grid; grid-template-columns: 28px minmax(0,1fr) 20px; align-items: center; gap: 9px; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: rgba(0,0,0,.12); }
+.social-question > span { color: #667286; font: 9px var(--mono); }
+.social-question p { margin: 0; color: #c4ccd8; font-size: 10px; line-height: 1.45; }
+.social-question b { color: #657184; font: 12px var(--mono); text-align: center; }
+.social-question.answered { border-color: rgba(94,224,174,.2); background: rgba(94,224,174,.035); }
+.social-question.answered b { color: var(--green); }
+.social-current-question { padding: 15px; border: 1px solid rgba(167,139,250,.18); border-radius: 7px; background: rgba(167,139,250,.045); }
+.social-current-question h3 { margin: 8px 0 0; color: #e0d9f2; font: 600 16px var(--display); line-height: 1.45; }
+.history-result.progress { color: var(--cyan); background: rgba(103,232,249,.1); }
+.history-entry-copy { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.history-feedback { overflow: hidden; color: #8695a8; font-size: 8px; line-height: 1.5; text-overflow: ellipsis; }
+.history-entry-copy .history-submitted { width: 100%; }
+.guide-layout { max-width: 1180px; margin: 0 auto; }
+.guide-intro-card, .guide-source-note { margin: 0 0 14px; padding: 17px 19px; border: 1px solid var(--line); border-radius: 9px; background: rgba(25,30,40,.78); }
+.guide-intro-card h2 { margin: 0 0 8px; color: #e0d9f2; font: 600 16px var(--display); }
+.guide-intro-card p, .guide-source-note p { margin: 7px 0 0; color: #8994a6; font-size: 10px; line-height: 1.7; }
+.guide-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; margin: 14px 0; }
+.guide-entry { min-width: 0; padding: 15px 16px; border: 1px solid var(--line); border-radius: 8px; background: rgba(25,30,40,.72); }
+.guide-entry-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.guide-entry-top > span { color: var(--violet-bright); font: 10px var(--mono); }
+.guide-entry h3 { margin: 0; color: #e0e4ec; font: 600 13px var(--display); }
+.guide-entry h4 { margin: 11px 0 4px; color: #b8a9e5; font: 600 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.guide-entry p { margin: 0; color: #8994a6; font-size: 9px; line-height: 1.7; }
+.guide-source-note .eyebrow { display: inline-block; margin-bottom: 4px; }
+
+@media (max-width: 680px) {
+  .guide-grid { grid-template-columns: 1fr; }
+  .dice-lock-summary { align-items: flex-start; }
+  .dice-lock-summary strong { margin-left: 0; }
+  .history-feedback { white-space: normal; }
+}
