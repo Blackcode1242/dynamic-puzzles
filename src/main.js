@@ -8,6 +8,9 @@ import {
   attemptLabel,
   toPublicState,
   createDemoPuzzles,
+  PUZZLE_TEMPLATES,
+  getPuzzleTemplate,
+  recalculateSequenceLocks,
 } from './model.js';
 import {
   connectToOwlbear,
@@ -163,6 +166,7 @@ async function bootstrap() {
 
     if (state.role === 'GM') {
       state.privatePuzzles = loadPrivatePuzzles();
+      recalculateSequenceLocks(state.privatePuzzles);
       if (state.demoMode && state.privatePuzzles.length === 0) {
         state.privatePuzzles = createDemoPuzzles();
         savePrivatePuzzles();
@@ -200,6 +204,7 @@ async function bootstrap() {
 
 function recordAttempt(privatePuzzle, payload, actor) {
   const publicPuzzle = privatePuzzle.public;
+  if (publicPuzzle.sequenceLocked) return { ok: false, solved: false, message: 'Esta etapa ainda depende da conclusão do enigma anterior.' };
   if (publicPuzzle.solved) return { ok: false, solved: false, message: 'Este enigma já foi resolvido.' };
   if (publicPuzzle.locked) return { ok: false, solved: false, message: 'Este enigma está bloqueado. Peça ao mestre para reiniciá-lo.' };
   const evaluation = evaluateAttempt(privatePuzzle, payload);
@@ -252,6 +257,7 @@ async function processAttempt(request) {
   const privatePuzzle = getPrivatePuzzle(request?.puzzleId);
   if (!privatePuzzle) return;
   const result = recordAttempt(privatePuzzle, request.payload, request.playerName || 'Jogador');
+  recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   if (state.connected) showNotification(result.message, result.ok ? 'SUCCESS' : 'WARNING');
   if (state.demoMode) setNotice(result.message, result.ok ? 'success' : 'warning');
@@ -260,6 +266,10 @@ async function processAttempt(request) {
 async function submitPayload(payload) {
   const puzzle = getSelectedPuzzle();
   if (!puzzle) return;
+  if (puzzle.sequenceLocked && state.role === 'PLAYER') {
+    setNotice('Esta etapa será liberada quando o enigma anterior da sequência for resolvido.', 'warning');
+    return;
+  }
   if (puzzle.solved || puzzle.locked) {
     setNotice(puzzle.solved ? 'Este enigma já foi solucionado.' : 'Este enigma está bloqueado.', 'warning');
     return;
@@ -282,6 +292,7 @@ async function submitPayload(payload) {
     return;
   }
   const result = recordAttempt(privatePuzzle, payload, state.demoMode ? 'Você (teste)' : 'Teste do mestre');
+  recalculateSequenceLocks(state.privatePuzzles);
   await saveAndPublish();
   setNotice(result.message, result.ok ? 'success' : 'warning');
   if (state.connected) showNotification(result.message, result.ok ? 'SUCCESS' : 'WARNING');
@@ -290,6 +301,7 @@ async function submitPayload(payload) {
 function statusChip(puzzle) {
   if (puzzle.solved) return '<span class="pill pill-success"><span class="dot"></span> Resolvido</span>';
   if (puzzle.locked) return '<span class="pill pill-danger"><span class="dot"></span> Bloqueado</span>';
+  if (puzzle.sequenceLocked) return '<span class="pill pill-neutral"><span class="dot"></span> Aguardando etapa</span>';
   return '<span class="pill pill-neutral"><span class="dot"></span> Em aberto</span>';
 }
 
@@ -312,7 +324,7 @@ function renderTabs() {
   return `
     <nav class="tabs" aria-label="Navegação principal">
       <button class="tab ${state.tab === 'room' ? 'active' : ''}" data-action="tab-room"><span class="tab-icon">◈</span> Sala de enigmas</button>
-      ${state.role === 'GM' ? `<button class="tab ${state.tab === 'master' ? 'active' : ''}" data-action="tab-master"><span class="tab-icon">⚙</span> Estúdio do mestre</button><button class="tab ${state.tab === 'guide' ? 'active' : ''}" data-action="tab-guide"><span class="tab-icon">☷</span> Guia do mestre</button>` : ''}
+      ${state.role === 'GM' ? `<button class="tab ${state.tab === 'master' ? 'active' : ''}" data-action="tab-master"><span class="tab-icon">⚙</span> Estúdio do mestre</button><button class="tab ${state.tab === 'library' ? 'active' : ''}" data-action="tab-library"><span class="tab-icon">▦</span> Modelos</button><button class="tab ${state.tab === 'guide' ? 'active' : ''}" data-action="tab-guide"><span class="tab-icon">☷</span> Guia do mestre</button>` : ''}
     </nav>`;
 }
 
@@ -333,10 +345,10 @@ function renderRoom() {
         <div class="sidebar-heading"><div><span class="eyebrow">ARQUIVO DA SALA</span><h2>Desafios</h2></div><span class="count-badge">${puzzles.length.toString().padStart(2, '0')}</span></div>
         <div class="puzzle-list">
           ${puzzles.map((puzzle, index) => `
-            <button class="puzzle-nav-item ${selected?.id === puzzle.id ? 'selected' : ''}" data-action="select-puzzle" data-id="${escapeHtml(puzzle.id)}">
+            <button class="puzzle-nav-item ${selected?.id === puzzle.id ? 'selected' : ''} ${puzzle.sequenceLocked && state.role === 'PLAYER' ? 'sequence-waiting' : ''}" data-action="select-puzzle" data-id="${escapeHtml(puzzle.id)}">
               <span class="puzzle-number">${String(index + 1).padStart(2, '0')}</span>
               <span class="puzzle-nav-copy"><strong>${escapeHtml(puzzle.title)}</strong><small>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</small></span>
-              <span class="nav-state ${puzzle.solved ? 'done' : puzzle.locked ? 'locked' : ''}"></span>
+              <span class="nav-state ${puzzle.solved ? 'done' : puzzle.locked || (puzzle.sequenceLocked && state.role === 'PLAYER') ? 'locked' : ''}"></span>
             </button>`).join('')}
         </div>
         <div class="sidebar-foot"><span class="live-indicator"></span> Estado compartilhado da sala</div>
@@ -359,14 +371,25 @@ function renderPuzzleWorkspace(puzzle) {
       ${statusChip(puzzle)}
     </div>
     ${puzzle.description ? `<p class="puzzle-description">${escapeHtml(puzzle.description)}</p>` : ''}
-    <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}</div>
+    <div class="puzzle-meta-row"><span>⌁ ${attemptsNoun} <b>${escapeHtml(attemptsLabel)}</b></span>${consequence.join('')}${puzzle.sequenceName ? `<span class="counter counter-sequence">▤ ${escapeHtml(puzzle.sequenceName)} · etapa ${puzzle.sequenceOrder}</span>` : ''}</div>
+    ${renderRevealedHints(puzzle)}
     <section class="challenge-card">
       <div class="challenge-topline"><span class="challenge-kicker">INTERFACE DO DESAFIO</span><span class="challenge-coord">DP / ${escapeHtml(puzzle.id.slice(0, 5).toUpperCase())}</span></div>
       ${puzzle.instructions ? `<div class="instruction-box"><span class="instruction-icon">✧</span><p>${escapeHtml(puzzle.instructions)}</p></div>` : ''}
-      ${puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
+      ${puzzle.sequenceLocked ? renderSequenceWaiting(puzzle) : puzzle.solved ? renderSolved(puzzle) : puzzle.locked ? renderLocked(puzzle) : renderPlayerControls(puzzle)}
     </section>
     ${renderHistory(puzzle)}
   `;
+}
+
+function renderRevealedHints(puzzle) {
+  const hints = puzzle.revealedHints || [];
+  if (!hints.length) return '';
+  return `<section class="revealed-hints"><div class="revealed-hints-heading"><span class="eyebrow">PISTAS LIBERADAS PELO MESTRE</span><span>${hints.length} / ${puzzle.hintCount || hints.length}</span></div><div class="revealed-hint-list">${hints.map((hint, index) => `<article class="revealed-hint"><span>${String(index + 1).padStart(2, '0')}</span><p>${escapeHtml(typeof hint === 'string' ? hint : hint.text)}</p></article>`).join('')}</div></section>`;
+}
+
+function renderSequenceWaiting(puzzle) {
+  return `<div class="result-panel result-locked"><div class="result-icon">⌁</div><div><span class="eyebrow">SEQUÊNCIA EM ANDAMENTO</span><h2>Esta etapa ainda não foi liberada</h2><p>Conclua a etapa anterior de <b>${escapeHtml(puzzle.sequenceName)}</b> para abrir este desafio. O mestre controla a ordem pela configuração da sequência.</p></div></div>`;
 }
 
 function safeHttpUrl(value) {
@@ -496,7 +519,7 @@ function renderGuide() {
     ['Documento rasgado', 'Escreva cada fragmento em uma linha, já na ordem correta. A extensão embaralha as partes para os jogadores reorganizarem.', 'Exemplo: um bilhete dividido em quatro pedaços que revela a ordem para abrir uma passagem. Não use para informação que o grupo precisa receber obrigatoriamente.'],
     ['Painel de interruptores', 'Defina uma sequência de 0 e 1: 0 significa desligado e 1 ligado. Use de 2 a 10 interruptores.', 'Exemplo: alinhar cinco alavancas para ativar uma ponte. As marcas no painel, símbolos ou pistas no cenário podem indicar o padrão.'],
   ];
-  return `<section class="guide-layout"><div class="master-intro"><div><span class="eyebrow">REFERÊNCIA DE MESA</span><h1>Guia do mestre</h1><p>Como preparar, conduzir e encaixar cada minigame na sua campanha.</p></div><button class="button button-quiet" data-action="tab-master">← Voltar ao estúdio</button></div><section class="guide-intro-card"><h2>O papel do minigame na cena</h2><p>Apresente o desafio como parte do cenário, deixe claro o que os personagens podem observar e permita que os jogadores usem as pistas que encontraram. O minigame deve materializar a ação dos personagens, não substituir a investigação nem decidir sozinho o que a história exige.</p><p>Configure antes da sessão o que está em jogo, quantas tentativas são aceitáveis e o que acontece se o grupo falhar. Recompensa pode ser uma pista, documento, item, acesso a uma área ou mudança no cenário.</p></section><div class="guide-grid">${entries.map(([title, setup, example], index) => `<article class="guide-entry"><div class="guide-entry-top"><span>${String(index + 1).padStart(2, '0')}</span><h3>${title}</h3></div><h4>Como configurar</h4><p>${setup}</p><h4>Como usar na campanha</h4><p>${example}</p></article>`).join('')}</div><section class="guide-intro-card"><h2>Tentativas, pressão e consequências</h2><p><b>Limite 0:</b> tentativas ilimitadas. Um limite maior permite experimentação; um limite baixo torna o erro perigoso. Em caso de falha, escolha entre não aplicar consequência, avançar um relógio, disparar um alarme ou bloquear o desafio. O relógio e o alarme são contadores internos da extensão: o mestre ainda decide como isso aparece no mundo do jogo.</p><p><b>Recompensas:</b> o conteúdo configurado só aparece para a sala após a validação do mestre. Use textos curtos, handouts externos ou links HTTPS para entregar a próxima pista.</p><p><b>Jogo em grupo:</b> todas as pessoas da sala podem enviar tentativas. O histórico registra jogador, palpite, feedback e horário. Em desafios de dedução, incentive a mesa a discutir hipóteses antes de gastar tentativas.</p></section><section class="guide-source-note"><span class="eyebrow">REFERÊNCIA DE ORDEM PARANORMAL II</span><p>O Hack Social e o destrancamento por dados foram inspirados nas regras de desafios de acesso do primeiro playtest (seção “Desafios de Acesso”, páginas 24–25). O playtest descreve teste de Intuição antes das perguntas sociais e uma senha de fechadura formada por resultados ordenados; a extensão oferece opções configuráveis para adaptar esses procedimentos à mesa. O segundo playtest apresenta graus de relação e benefícios de apoio como referência narrativa adicional, mas não define a mecânica de Hack Social.</p><p>Esta extensão é independente e não substitui os documentos oficiais. Ela não lê fichas, não realiza testes de perícia automaticamente e não aplica regras específicas de personagem: o mestre faz esses julgamentos durante a sessão.</p></section></section>`;
+  return `<section class="guide-layout"><div class="master-intro"><div><span class="eyebrow">REFERÊNCIA DE MESA</span><h1>Guia do mestre</h1><p>Como preparar, conduzir e encaixar cada minigame na sua campanha.</p></div><button class="button button-quiet" data-action="tab-master">← Voltar ao estúdio</button></div><section class="guide-intro-card"><h2>O papel do minigame na cena</h2><p>Apresente o desafio como parte do cenário, deixe claro o que os personagens podem observar e permita que os jogadores usem as pistas que encontraram. O minigame deve materializar a ação dos personagens, não substituir a investigação nem decidir sozinho o que a história exige.</p><p>Configure antes da sessão o que está em jogo, quantas tentativas são aceitáveis e o que acontece se o grupo falhar. Recompensa pode ser uma pista, documento, item, acesso a uma área ou mudança no cenário. Cada tipo também tem um modelo demonstrativo, um modo simples para começar e opções avançadas para personalizar a dificuldade.</p></section><div class="guide-grid">${entries.map(([title, setup, example], index) => `<article class="guide-entry"><div class="guide-entry-top"><span>${String(index + 1).padStart(2, '0')}</span><h3>${title}</h3></div><h4>Como configurar</h4><p>${setup}</p><h4>Como usar na campanha</h4><p>${example}</p></article>`).join('')}</div><section class="guide-intro-card"><h2>Tentativas, pressão e consequências</h2><p><b>Limite 0:</b> tentativas ilimitadas. Um limite maior permite experimentação; um limite baixo torna o erro perigoso. Em caso de falha, escolha entre não aplicar consequência, avançar um relógio, disparar um alarme ou bloquear o desafio. O relógio e o alarme são contadores internos da extensão: o mestre ainda decide como isso aparece no mundo do jogo.</p><p><b>Recompensas:</b> o conteúdo configurado só aparece para a sala após a validação do mestre. Use textos curtos, handouts externos ou links HTTPS para entregar a próxima pista.</p><p><b>Jogo em grupo:</b> todas as pessoas da sala podem enviar tentativas. O histórico registra jogador, palpite, feedback e horário. Em desafios de dedução, incentive a mesa a discutir hipóteses antes de gastar tentativas.</p></section><section class="guide-intro-card"><h2>Modelos, modos de configuração e dicas</h2><p><b>Modelo demonstrativo:</b> abra a aba Modelos, escolha um tipo e use um cenário pronto como ponto de partida. O modelo é editável e não é publicado até você salvar o enigma.</p><p><b>Modo simples:</b> mostra somente os campos essenciais para colocar o desafio em jogo. <b>Modo avançado:</b> libera limites, consequências, dicas graduais e encadeamento de etapas. Os valores avançados já configurados são preservados quando você alterna para o modo simples.</p><p><b>Dicas graduais:</b> escreva até cinco dicas, da mais sutil à mais direta. No Estúdio do mestre, libere uma por vez. Somente as dicas já liberadas são compartilhadas com os jogadores.</p><p><b>Sequências:</b> use o mesmo nome de sequência em vários enigmas e numere as etapas. A primeira etapa fica disponível; as seguintes são liberadas quando a anterior for concluída. Reordenar etapas altera a progressão.</p></section><section class="guide-source-note"><span class="eyebrow">REFERÊNCIA DE ORDEM PARANORMAL II</span><p>O Hack Social e o destrancamento por dados foram inspirados nas regras de desafios de acesso do primeiro playtest (seção “Desafios de Acesso”, páginas 24–25). O playtest descreve teste de Intuição antes das perguntas sociais e uma senha de fechadura formada por resultados ordenados; a extensão oferece opções configuráveis para adaptar esses procedimentos à mesa. O segundo playtest apresenta graus de relação e benefícios de apoio como referência narrativa adicional, mas não define a mecânica de Hack Social.</p><p>Esta extensão é independente e não substitui os documentos oficiais. Ela não lê fichas, não realiza testes de perícia automaticamente e não aplica regras específicas de personagem: o mestre faz esses julgamentos durante a sessão.</p></section></section>`;
 }
 
 function renderMaster() {
@@ -506,10 +529,10 @@ function renderMaster() {
   const alarms = puzzles.reduce((sum, puzzle) => sum + puzzle.public.alarmCount, 0);
   const clocks = puzzles.reduce((sum, puzzle) => sum + puzzle.public.clockCount, 0);
   return `<section class="master-layout">
-    <div class="master-intro"><div><span class="eyebrow">CONTROLE DE CAMPANHA</span><h1>Estúdio do mestre</h1><p>Crie, configure e acompanhe os desafios da sua sala.</p></div><button class="button button-primary" data-action="new-puzzle" ${puzzles.length >= MAX_PUZZLES ? 'disabled' : ''}>＋ Novo enigma</button></div>
+    <div class="master-intro"><div><span class="eyebrow">CONTROLE DE CAMPANHA</span><h1>Estúdio do mestre</h1><p>Crie, configure e acompanhe os desafios da sua sala.</p></div><div class="master-intro-actions"><button class="button button-quiet" data-action="tab-library">Biblioteca de modelos</button><button class="button button-primary" data-action="new-puzzle" ${puzzles.length >= MAX_PUZZLES ? 'disabled' : ''}>＋ Novo enigma</button></div></div>
     <div class="stats-grid"><div class="stat-card"><span>ENIGMAS CRIADOS</span><strong>${String(puzzles.length).padStart(2, '0')}</strong><small>Limite local: ${MAX_PUZZLES}</small></div><div class="stat-card"><span>RESOLVIDOS</span><strong class="stat-green">${String(solved).padStart(2, '0')}</strong><small>${puzzles.length ? Math.round((solved / puzzles.length) * 100) : 0}% da sala</small></div><div class="stat-card"><span>RELÓGIOS AVANÇADOS</span><strong class="stat-amber">${String(clocks).padStart(2, '0')}</strong><small>Consequências registradas</small></div><div class="stat-card"><span>ALARMES DISPARADOS</span><strong class="stat-red">${String(alarms).padStart(2, '0')}</strong><small>Consequências registradas</small></div></div>
     <div class="master-section-heading"><div><span class="eyebrow">BIBLIOTECA DE DESAFIOS</span><h2>Seus enigmas</h2></div><span class="muted-small">As soluções não são compartilhadas com os jogadores.</span></div>
-    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} ${puzzle.type === 'social' ? 'erro(s)' : 'tentativa(s)'}</span><span>${puzzle.public.history.length} eventos</span></div><div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
+    ${puzzles.length ? `<div class="master-puzzle-grid">${puzzles.map((puzzle, index) => `<article class="master-puzzle-card"><div class="master-card-top"><span class="master-card-number">${String(index + 1).padStart(2, '0')}</span>${statusChip(puzzle.public)}</div><h3>${escapeHtml(puzzle.title)}</h3><p>${escapeHtml(TYPE_LABELS[puzzle.type] || puzzle.type)}</p><div class="master-card-meta"><span>⌁ ${puzzle.public.attemptsUsed} ${puzzle.type === 'social' ? 'erro(s)' : 'tentativa(s)'}</span><span>${puzzle.public.history.length} eventos</span></div>${puzzle.public.sequenceName ? `<div class="master-card-chain">▤ ${escapeHtml(puzzle.public.sequenceName)} · etapa ${puzzle.public.sequenceOrder}</div>` : ''}${(puzzle.hints || []).length ? `<div class="master-card-hints"><span>Dicas: ${puzzle.public.revealedHints?.length || 0}/${puzzle.hints.length}</span><button class="button button-quiet button-mini" data-action="release-hint" data-id="${escapeHtml(puzzle.id)}" ${(puzzle.public.revealedHints?.length || 0) >= puzzle.hints.length ? 'disabled' : ''}>Liberar próxima dica</button></div>` : ''}<div class="master-card-actions"><button class="button button-quiet" data-action="edit-puzzle" data-id="${escapeHtml(puzzle.id)}">Editar</button><button class="icon-button" data-action="reset-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Zerar progresso">↺</button><button class="icon-button danger" data-action="delete-puzzle" data-id="${escapeHtml(puzzle.id)}" title="Excluir enigma">×</button></div></article>`).join('')}</div>` : `<div class="empty-master"><div class="empty-orbit small">✧</div><h3>Nenhum enigma por enquanto</h3><p>Crie seu primeiro desafio ou carregue exemplos para explorar o sistema.</p><div class="empty-actions"><button class="button button-primary" data-action="new-puzzle">Criar primeiro enigma</button><button class="button button-quiet" data-action="seed-demo">Carregar exemplos</button></div></div>`}
     ${puzzles.length ? `<div class="master-footer-actions"><button class="button button-quiet" data-action="seed-demo" ${puzzles.length + 11 > MAX_PUZZLES ? 'disabled' : ''}>＋ Adicionar conjunto de exemplos</button><button class="button button-quiet" data-action="export-backup">Exportar backup privado ↓</button><label class="button button-quiet file-button">Importar backup ↑<input type="file" accept="application/json" data-action="import-backup" hidden /></label></div>` : ''}
     <div class="security-note"><span>◈</span><div><strong>Respostas protegidas por separação de dados</strong><p>As soluções e a configuração privada ficam no armazenamento local do navegador do mestre. A sala recebe somente as informações públicas dos desafios e os resultados das tentativas.</p></div></div>
   </section>`;
@@ -518,8 +541,22 @@ function renderMaster() {
 function renderEditor() {
   const draft = state.editorDraft || {};
   const type = draft.type || 'lock';
+  const advanced = draft.editorMode === 'advanced';
+  const template = type === 'lock' && draft.lockMode === 'deduction'
+    ? PUZZLE_TEMPLATES.find((item) => item.id === 'lock-dice')
+    : type === 'lock' && draft.lockMode === 'wheel'
+      ? PUZZLE_TEMPLATES.find((item) => item.id === 'lock-wheel')
+      : (PUZZLE_TEMPLATES.find((item) => item.type === type && !['lock-dice', 'lock-wheel'].includes(item.id)) || PUZZLE_TEMPLATES.find((item) => item.type === type));
   const typeOptions = PUZZLE_TYPES.map((item) => `<option value="${item.id}" ${type === item.id ? 'selected' : ''}>${item.label}</option>`).join('');
-  return `<section class="editor-layout"><div class="editor-top"><button class="back-link" data-action="cancel-editor">← Voltar ao estúdio</button><span class="eyebrow">${state.editorId ? 'EDITAR DESAFIO' : 'NOVO DESAFIO'}</span></div><div class="editor-title"><div><h1>${state.editorId ? 'Editar enigma' : 'Criar enigma'}</h1><p>Defina o que os jogadores verão e mantenha a solução somente com o mestre.</p></div><span class="editor-step">CONFIGURAÇÃO / 01</span></div><form class="editor-form" data-form="puzzle-editor">
+  const hiddenAdvanced = advanced ? '' : `
+    <input type="hidden" name="attemptLimit" value="${escapeHtml(draft.attemptLimit ?? 0)}" />
+    <input type="hidden" name="errorEffect" value="${escapeHtml(draft.errorEffect || 'none')}" />
+    <input type="hidden" name="sequenceName" value="${escapeHtml(draft.sequenceName || '')}" />
+    <input type="hidden" name="sequenceOrder" value="${escapeHtml(draft.sequenceOrder ?? 1)}" />
+    <textarea name="hints" hidden>${escapeHtml(draft.hints || '')}</textarea>`;
+  return `<section class="editor-layout"><div class="editor-top"><button class="back-link" data-action="cancel-editor">← Voltar ao estúdio</button><span class="eyebrow">${state.editorId ? 'EDITAR DESAFIO' : 'NOVO DESAFIO'}</span></div><div class="editor-title"><div><h1>${state.editorId ? 'Editar enigma' : 'Criar enigma'}</h1><p>Comece pelo essencial e aprofunde as regras quando quiser.</p></div><span class="editor-step">CONFIGURAÇÃO / 01</span></div><form class="editor-form" data-form="puzzle-editor">
+    <section class="editor-mode-card"><div><span class="eyebrow">NÍVEL DE CONFIGURAÇÃO</span><h3>${advanced ? 'Opções avançadas' : 'Configuração simples'}</h3><p>${advanced ? 'Personalize regras, dicas e encadeamento entre desafios.' : 'Configure o necessário para colocar o enigma em jogo. Você pode aprofundar depois.'}</p></div><div class="editor-mode-actions"><button type="button" class="mode-choice ${!advanced ? 'active' : ''}" data-action="editor-mode-simple">Simples</button><button type="button" class="mode-choice ${advanced ? 'active' : ''}" data-action="editor-mode-advanced">Avançado</button></div></section>
+    <section class="editor-template-strip"><div class="editor-template-preview"><span class="eyebrow">DEMONSTRAÇÃO · ${escapeHtml(template?.label || 'ENIGMA')}</span><strong>${escapeHtml(template?.preview || 'Modelo de exemplo')}</strong><small>${escapeHtml(template?.description || '')}</small></div><button class="button button-quiet" type="button" data-action="load-template">Carregar exemplo deste tipo</button><button class="button button-quiet" type="button" data-action="tab-library">Ver todos os modelos</button></section>
     <div class="editor-columns"><div class="editor-main-column">
       <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">◇</span><div><h3>Identidade do desafio</h3><p>O conteúdo apresentado aos jogadores.</p></div></div>
         <label class="form-field"><span>Nome do enigma</span><input name="title" required maxlength="80" value="${escapeHtml(draft.title || '')}" placeholder="Ex.: Cofre da biblioteca" /></label>
@@ -527,24 +564,31 @@ function renderEditor() {
         <label class="form-field"><span>Descrição curta</span><textarea name="description" maxlength="300" rows="2" placeholder="Contextualize o desafio para o grupo…">${escapeHtml(draft.description || '')}</textarea></label>
         <label class="form-field"><span>Instruções / pistas visíveis</span><textarea name="instructions" maxlength="400" rows="3" placeholder="O que os jogadores sabem antes de tentar?">${escapeHtml(draft.instructions || '')}</textarea></label>
       </section>
-      <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⌘</span><div><h3>Configuração da interação</h3><p>Defina a solução correta. Este campo não será enviado aos jogadores.</p></div></div>${renderTypeFields(type, draft)}</section>
+      <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⌘</span><div><h3>Configuração da interação</h3><p>Defina a solução correta. Este campo não será enviado aos jogadores.</p></div></div>${renderTypeFields(type, draft, advanced)}</section>
+      ${advanced ? `<section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">☷</span><div><h3>Dicas graduais</h3><p>Prepare pistas que o mestre pode liberar uma de cada vez.</p></div></div><label class="form-field"><span>Até cinco dicas (uma por linha, da mais sutil à mais direta)</span><textarea name="hints" rows="5" maxlength="1500" placeholder="Dica 1: observe o símbolo ao lado.\nDica 2: o símbolo representa o mês de nascimento.\nDica 3: procure a data no documento.">${escapeHtml(draft.hints || '')}</textarea><small>O texto das dicas ainda não liberadas fica privado. Só as dicas publicadas aparecem na sala dos jogadores.</small></label></section>` : ''}
       <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">✧</span><div><h3>Recompensa ao resolver</h3><p>O conteúdo só aparece na sala depois da resposta correta.</p></div></div>
         <label class="form-field"><span>Título da recompensa</span><input name="rewardTitle" maxlength="60" value="${escapeHtml(draft.rewardTitle || '')}" placeholder="Ex.: Documento recuperado" /></label>
         <label class="form-field"><span>Conteúdo revelado</span><textarea name="rewardContent" maxlength="600" rows="3" placeholder="Texto, pista, instrução ou descrição do item…">${escapeHtml(draft.rewardContent || '')}</textarea></label>
         <label class="form-field"><span>Link de documento ou item (opcional)</span><input name="rewardUrl" type="url" value="${escapeHtml(draft.rewardUrl || '')}" maxlength="500" placeholder="https://…" /></label>
       </section>
     </div><aside class="editor-side-column">
-      <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⚑</span><div><h3>Regras de tentativa</h3><p>Controle a pressão e as consequências.</p></div></div>
+      ${advanced ? `<section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⚑</span><div><h3>Regras de tentativa</h3><p>Controle a pressão e as consequências.</p></div></div>
         <label class="form-field"><span>${type === 'social' ? 'Limite de respostas incorretas' : 'Limite de tentativas'}</span><input name="attemptLimit" type="number" min="0" max="99" value="${escapeHtml(draft.attemptLimit ?? 3)}" /><small>${type === 'social' ? 'Respostas corretas avançam o progresso sem consumir o limite. Use 0 para erros ilimitados.' : 'Use 0 para tentativas ilimitadas.'}</small></label>
         <label class="form-field"><span>Ao errar, acontece…</span><select name="errorEffect">${ERROR_EFFECTS.map((effect) => `<option value="${effect.id}" ${(draft.errorEffect || 'none') === effect.id ? 'selected' : ''}>${effect.label}</option>`).join('')}</select></label>
-        <div class="rule-explainer"><b>Como as consequências funcionam</b><p>Relógio e alarme são contadores compartilhados. Bloqueio imediato encerra novas tentativas até o mestre reiniciar o enigma.</p></div>
+        <div class="rule-explainer"><b>Como as consequências funcionam</b><p>Relógio e alarme são contadores da extensão. O mestre decide como eles afetam a cena. Bloqueio encerra as tentativas até o reinício.</p></div>
       </section>
+      <section class="editor-card"><div class="editor-card-heading"><span class="editor-icon">⇢</span><div><h3>Sequência de enigmas</h3><p>Encadeie desafios para formar uma sala de Escape Room.</p></div></div>
+        <label class="form-field"><span>Nome da sequência (opcional)</span><input name="sequenceName" maxlength="60" value="${escapeHtml(draft.sequenceName || '')}" placeholder="Ex.: Cofre do laboratório" /></label>
+        <label class="form-field"><span>Número da etapa</span><input name="sequenceOrder" type="number" min="1" max="99" value="${escapeHtml(draft.sequenceOrder ?? 1)}" /></label>
+        <small class="field-help">Use o mesmo nome em vários enigmas. A etapa 1 abre primeiro; cada etapa seguinte é liberada ao resolver a anterior.</small>
+      </section>` : `<div class="simple-default-card"><span class="eyebrow">PADRÕES SIMPLES</span><strong>Sem pressão extra</strong><p>Por padrão, as tentativas são ilimitadas e erros não disparam consequências. Ative o modo avançado para alterar isso, encadear desafios ou criar dicas graduais.</p></div>`}
+      ${hiddenAdvanced}
       <div class="editor-save-card"><span class="save-shield">◈</span><strong>Pronto para a sala?</strong><p>A solução fica privada no dispositivo do mestre. Apenas o desafio e seu progresso são publicados.</p><button class="button button-primary button-wide" type="submit">${state.editorId ? 'Salvar alterações' : 'Criar enigma'} <span>→</span></button><button class="button button-quiet button-wide" type="button" data-action="cancel-editor">Cancelar</button></div>
     </aside></div>
   </form></section>`;
 }
 
-function renderTypeFields(type, draft) {
+function renderTypeFields(type, draft, advanced = false) {
   const input = (name, label, value, placeholder = '', typeName = 'text') => `<label class="form-field"><span>${label}</span><input name="${name}" type="${typeName}" value="${escapeHtml(value ?? '')}" placeholder="${escapeHtml(placeholder)}" /></label>`;
   const textarea = (name, label, value, placeholder = '') => `<label class="form-field"><span>${label}</span><textarea name="${name}" rows="3" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value ?? '')}</textarea></label>`;
   if (type === 'lock') {
@@ -552,14 +596,16 @@ function renderTypeFields(type, draft) {
     const modeField = `<label class="form-field"><span>Tipo de mecanismo</span><select name="lockMode" data-editor-lock-mode><option value="keypad" ${mode === 'keypad' ? 'selected' : ''}>Teclado</option><option value="wheel" ${mode === 'wheel' ? 'selected' : ''}>Discos giratórios</option><option value="deduction" ${mode === 'deduction' ? 'selected' : ''}>Dedução por dados</option></select></label>`;
     if (mode === 'deduction') {
       const sides = Number(draft.diceSides || 6);
-      return `${modeField}<div class="form-two-columns"><label class="form-field"><span>Quantidade de dados</span><input name="diceCount" type="number" min="1" max="20" value="${escapeHtml(draft.diceCount ?? 4)}" /></label><label class="form-field"><span>Tipo de dado</span><select name="diceSides">${[4, 6, 8, 10, 12].map((face) => `<option value="${face}" ${sides === face ? 'selected' : ''}>D${face}</option>`).join('')}</select></label></div>${input('diceAnswer', 'Combinação secreta (na ordem)', draft.diceAnswer || draft.answer, 'Ex.: 4, 3, 2, 1')}<label class="form-field"><span>Formato de feedback</span><select name="feedbackMode"><option value="individual" ${(draft.feedbackMode || 'individual') === 'individual' ? 'selected' : ''}>Individual · cada posição</option><option value="grouped" ${draft.feedbackMode === 'grouped' ? 'selected' : ''}>Agrupado · totais sem posições</option></select></label><p class="field-help">A quantidade pode variar de 1 a 20 dados. Escolha D4, D6, D8, D10 ou D12. Separe os valores secretos por vírgula, na ordem dos dados.</p>`;
+      return `${modeField}<div class="form-two-columns"><label class="form-field"><span>Quantidade de dados</span><input name="diceCount" type="number" min="1" max="20" value="${escapeHtml(draft.diceCount ?? 4)}" /></label><label class="form-field"><span>Tipo de dado</span><select name="diceSides">${[4, 6, 8, 10, 12].map((face) => `<option value="${face}" ${sides === face ? 'selected' : ''}>D${face}</option>`).join('')}</select></label></div>${input('diceAnswer', 'Combinação secreta (na ordem)', draft.diceAnswer || draft.answer, 'Ex.: 4, 3, 2, 1')}${advanced ? `<label class="form-field"><span>Formato de feedback</span><select name="feedbackMode"><option value="individual" ${(draft.feedbackMode || 'individual') === 'individual' ? 'selected' : ''}>Individual · cada posição</option><option value="grouped" ${draft.feedbackMode === 'grouped' ? 'selected' : ''}>Agrupado · totais sem posições</option></select></label>` : `<input type="hidden" name="feedbackMode" value="${escapeHtml(draft.feedbackMode || 'individual')}" />`}<p class="field-help">A quantidade pode variar de 1 a 20 dados. Escolha D4, D6, D8, D10 ou D12. Separe os valores secretos por vírgula, na ordem dos dados.</p>`;
     }
     return `<div class="form-two-columns">${input('answer', 'Resposta correta', draft.answer, 'Ex.: 0482')}${modeField}</div><p class="field-help">O teclado aceita letras e números. Os discos exibem a quantidade de caracteres da resposta.</p>`;
   }
-  if (type === 'social') return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor | Thorinho;Trovão&#10;Em que cidade nasceu? | Santos | Santos-SP">${escapeHtml(draft.socialQuestions || '')}</textarea><small>Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.</small></label><label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? 3)}" /></label><p class="field-help">As perguntas ficam visíveis aos jogadores; as respostas e variações permanecem privadas. No modo investigativo, perguntas resolvidas ficam marcadas e não podem ser respondidas novamente.</p>`;
-  if (type === 'terminal') return `${input('terminalLabel', 'Identificação do terminal', draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}${input('username', 'Usuário correto', draft.username, 'Ex.: admin')}${input('password', 'Senha correta', draft.password, 'Senha de acesso', 'text')}${textarea('acceptedCommands', 'Comandos aceitos (um por linha)', draft.acceptedCommands, 'help\nopen vault\noverride')}<p class="field-help">O terminal aceita o login correto ou qualquer um dos comandos cadastrados. Os comandos válidos não são exibidos automaticamente.</p>`;
-  if (type === 'cipher') return `${textarea('cipherText', 'Texto cifrado', draft.cipherText, 'Ex.: FKR UD QXEV')}${input('answer', 'Texto original / resposta', draft.answer, 'A mensagem decifrada')}
-    <div class="form-two-columns"><label class="form-field"><span>Tipo de cifra</span><select name="cipherMethod"><option value="caesar" ${(draft.cipherMethod || 'caesar') === 'caesar' ? 'selected' : ''}>César</option><option value="substitution" ${draft.cipherMethod === 'substitution' ? 'selected' : ''}>Substituição</option><option value="wheel" ${draft.cipherMethod === 'wheel' ? 'selected' : ''}>Roda de cifras</option></select></label>${input('shift', 'Deslocamento (César)', draft.shift ?? 3, '3', 'number')}</div><p class="field-help">O tipo e o deslocamento são mostrados como pistas. A validação compara a mensagem digitada com a resposta.</p>`;
+  if (type === 'social') {
+    const questionCount = String(draft.socialQuestions || '').split(/\r?\n/).filter((line) => line.trim()).length;
+    return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor&#10;Em que cidade nasceu? | Santos">${escapeHtml(draft.socialQuestions || '')}</textarea><small>${advanced ? 'Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.' : 'Formato simples: pergunta | resposta. A quantidade de respostas definida no modelo é mantida; para alterá-la, use o modo avançado.'}</small></label>${advanced ? `<label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? questionCount ?? 1)}" /></label>` : `<input type="hidden" name="requiredAnswers" value="${escapeHtml(Math.min(Number(draft.requiredAnswers) || questionCount || 1, questionCount || 1))}" />`}<p class="field-help">As perguntas são públicas; as respostas e variações permanecem privadas.</p>`;
+  }
+  if (type === 'terminal') return `${input('username', 'Usuário correto', draft.username, 'Ex.: admin')}${input('password', 'Senha correta', draft.password, 'Senha de acesso', 'text')}${advanced ? `${input('terminalLabel', 'Identificação do terminal', draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}${textarea('acceptedCommands', 'Comandos aceitos (um por linha)', draft.acceptedCommands, 'help\\nopen vault\\noverride')}` : `<input type="hidden" name="terminalLabel" value="${escapeHtml(draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}" /><textarea name="acceptedCommands" hidden>${escapeHtml(draft.acceptedCommands || '')}</textarea>`}<p class="field-help">O terminal aceita o login correto ou qualquer comando previamente cadastrado.</p>`;
+  if (type === 'cipher') return `${textarea('cipherText', 'Texto cifrado', draft.cipherText, 'Ex.: FKR UD QXEV')}${input('answer', 'Texto original / resposta', draft.answer, 'A mensagem decifrada')}${advanced ? `<div class="form-two-columns"><label class="form-field"><span>Tipo de cifra</span><select name="cipherMethod"><option value="caesar" ${(draft.cipherMethod || 'caesar') === 'caesar' ? 'selected' : ''}>César</option><option value="substitution" ${draft.cipherMethod === 'substitution' ? 'selected' : ''}>Substituição</option><option value="wheel" ${draft.cipherMethod === 'wheel' ? 'selected' : ''}>Roda de cifras</option></select></label>${input('shift', 'Deslocamento (César)', draft.shift ?? 3, '3', 'number')}</div>` : `<input type="hidden" name="cipherMethod" value="${escapeHtml(draft.cipherMethod || 'caesar')}" /><input type="hidden" name="shift" value="${escapeHtml(draft.shift ?? 3)}" />`}<p class="field-help">A validação compara a mensagem enviada com a resposta configurada.</p>`;
   if (type === 'sequence') return `${input('availableSymbols', 'Símbolos disponíveis', draft.availableSymbols || DEFAULT_SYMBOLS.join(' '), '◆ ● ▲ ■ ✦')}${input('answerSequence', 'Sequência correta (separada por espaço)', draft.answerSequence, '◆ ▲ ● ■')}<p class="field-help">Os símbolos disponíveis aparecem como botões. A ordem correta permanece privada.</p>`;
   if (type === 'wires') {
     const colors = draft.wireColors || 'Vermelho, Azul, Amarelo, Verde';
@@ -567,14 +613,18 @@ function renderTypeFields(type, draft) {
     const correct = draft.correctWire || 'wire-0';
     return `${textarea('wireColors', 'Fios disponíveis (separados por vírgula)', colors, 'Vermelho, Azul, Amarelo, Verde')}<label class="form-field"><span>Fio correto</span><select name="correctWire">${labels.map((label, index) => `<option value="wire-${index}" ${correct === `wire-${index}` ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label><p class="field-help">O jogador vê todos os fios e escolhe um para cortar. A cor correta fica privada.</p>`;
   }
-  if (type === 'document') return `${textarea('fragments', 'Fragmentos na ordem correta (um por linha)', draft.fragments, 'Primeiro trecho…\nSegundo trecho…\nTerceiro trecho…')}<p class="field-help">Os fragmentos são embaralhados na sala. Os jogadores precisam reorganizá-los antes de confirmar.</p>`;
+  if (type === 'document') return `${textarea('fragments', 'Fragmentos na ordem correta (um por linha)', draft.fragments, 'Primeiro trecho…\\nSegundo trecho…\\nTerceiro trecho…')}<p class="field-help">Os fragmentos são embaralhados na sala. Os jogadores precisam reorganizá-los antes de confirmar.</p>`;
   if (type === 'switches') return `${input('switchPattern', 'Combinação correta (0 = desligado, 1 = ligado)', draft.switchPattern || '10110', '10110')}<p class="field-help">Use de 2 a 10 posições. A combinação correta nunca é enviada ao painel público.</p>`;
   return '<p class="field-help">Selecione um tipo de interação.</p>';
 }
 
+function renderTemplateLibrary() {
+  return `<section class="template-library-layout"><div class="master-intro"><div><span class="eyebrow">MODELOS DE PARTIDA</span><h1>Biblioteca de modelos</h1><p>Todo tipo de enigma tem uma demonstração pronta. Use o modelo como está ou personalize no editor.</p></div><button class="button button-quiet" data-action="tab-master">${state.editorDraft ? '← Voltar à configuração' : '← Voltar ao estúdio'}</button></div><div class="template-library-grid">${PUZZLE_TEMPLATES.map((template, index) => `<article class="template-card"><div class="template-card-top"><span class="template-card-index">${String(index + 1).padStart(2, '0')}</span><span class="template-difficulty">${escapeHtml(template.difficulty)}</span></div><span class="eyebrow">${escapeHtml(template.label)}</span><h3>${escapeHtml(template.draft.title)}</h3><p>${escapeHtml(template.description)}</p><div class="template-demo-preview"><small>DEMONSTRAÇÃO</small><strong>${escapeHtml(template.preview)}</strong></div><div class="template-card-footer"><span>Modelo editável · não publicado</span><button class="button button-primary" data-action="use-template" data-id="${escapeHtml(template.id)}">Usar modelo <span>→</span></button></div></article>`).join('')}</div></section>`;
+}
+
 function render() {
   if (!root) return;
-  root.innerHTML = `${renderHeader()}${renderTabs()}<div class="app-content">${renderNotice()}${state.tab === 'master' && state.role === 'GM' ? renderMaster() : state.tab === 'guide' && state.role === 'GM' ? renderGuide() : renderRoom()}</div><footer class="app-footer"><span> DYNAMIC PUZZLES <i>·</i> v0.2.0</span><span>${state.demoMode ? 'Demonstração local — nenhuma sala conectada' : 'Dados sincronizados pela sala do Owlbear Rodeo'}</span></footer>`;
+  root.innerHTML = `${renderHeader()}${renderTabs()}<div class="app-content">${renderNotice()}${state.tab === 'master' && state.role === 'GM' ? renderMaster() : state.tab === 'library' && state.role === 'GM' ? renderTemplateLibrary() : state.tab === 'guide' && state.role === 'GM' ? renderGuide() : renderRoom()}</div><footer class="app-footer"><span> DYNAMIC PUZZLES <i>·</i> v0.3.0</span><span>${state.demoMode ? 'Demonstração local — nenhuma sala conectada' : 'Dados sincronizados pela sala do Owlbear Rodeo'}</span></footer>`;
 }
 
 function readForm(form) {
@@ -592,6 +642,10 @@ function draftFromPrivate(puzzle) {
     rewardTitle: puzzle.reward?.title || '',
     rewardContent: puzzle.reward?.content || '',
     rewardUrl: puzzle.reward?.url || '',
+    hints: (puzzle.hints || []).join('\n'),
+    sequenceName: puzzle.public.sequenceName || '',
+    sequenceOrder: puzzle.public.sequenceOrder || 1,
+    editorMode: 'advanced',
   };
   if (puzzle.type === 'lock') {
     if (puzzle.public.config.mode === 'deduction') Object.assign(draft, { lockMode: 'deduction', diceCount: puzzle.public.config.diceCount, diceSides: puzzle.public.config.diceSides, diceAnswer: (puzzle.secret.combination || []).join(', '), feedbackMode: puzzle.public.config.feedbackMode });
@@ -609,6 +663,8 @@ function draftFromPrivate(puzzle) {
   if (puzzle.type === 'switches') Object.assign(draft, { switchPattern: puzzle.secret.pattern.map((bit) => bit ? '1' : '0').join('') });
   return draft;
 }
+
+function normalizeName(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('pt-BR'); }
 
 function validateEditor(values) {
   if (!values.title?.trim()) return 'Dê um nome ao enigma.';
@@ -633,6 +689,17 @@ function validateEditor(values) {
   if (values.type === 'wires' && !values.wireColors?.trim()) return 'Informe ao menos um fio.';
   if (values.type === 'document' && values.fragments?.split('\n').filter((part) => part.trim()).length < 2) return 'O documento precisa de pelo menos dois fragmentos.';
   if (values.type === 'switches' && values.switchPattern?.replace(/[^01]/g, '').length < 2) return 'O painel precisa de pelo menos dois interruptores.';
+  if (String(values.hints || '').split('\n').filter((item) => item.trim()).length > 5) return 'Configure no máximo cinco dicas graduais.';
+  if (String(values.sequenceName || '').trim()) {
+    const order = Number(values.sequenceOrder || 1);
+    if (!Number.isInteger(order) || order < 1 || order > 99) return 'A etapa da sequência deve ficar entre 1 e 99.';
+    const matchingStages = state.privatePuzzles.filter((item) => item.id !== state.editorId && item.public.sequenceName && normalizeName(item.public.sequenceName) === normalizeName(values.sequenceName));
+    const duplicate = matchingStages.find((item) => Number(item.public.sequenceOrder) === order);
+    if (duplicate) return `A sequência “${values.sequenceName}” já tem uma etapa ${order}. Escolha outro número.`;
+    if (order === 1 && matchingStages.some((item) => Number(item.public.sequenceOrder) < 1)) return 'A sequência tem uma etapa inválida. Revise a numeração.';
+    if (order > 1 && !matchingStages.some((item) => Number(item.public.sequenceOrder) === 1)) return `Crie a etapa 1 da sequência “${values.sequenceName}” antes de adicionar outras etapas.`;
+    if (order > 1 && !matchingStages.some((item) => Number(item.public.sequenceOrder) === order - 1)) return `Crie ou numere a etapa ${order - 1} antes da etapa ${order}.`;
+  }
   return '';
 }
 
@@ -660,6 +727,7 @@ async function onSubmit(event) {
       if (previous) state.privatePuzzles = state.privatePuzzles.map((item) => item.id === previous.id ? puzzle : item);
       else state.privatePuzzles = [...state.privatePuzzles, puzzle];
       state.selectedPuzzleId = puzzle.id;
+      recalculateSequenceLocks(state.privatePuzzles);
       state.editorDraft = null;
       state.editorId = null;
       state.tab = 'master';
@@ -702,13 +770,42 @@ function onClick(event) {
   if (action === 'tab-room') { state.tab = 'room'; state.notice = ''; return render(); }
   if (action === 'tab-master') { state.tab = 'master'; state.notice = ''; return render(); }
   if (action === 'tab-guide') { state.tab = 'guide'; state.notice = ''; return render(); }
+  if (action === 'tab-library') { state.tab = 'library'; state.notice = ''; return render(); }
+  if (action === 'editor-mode-simple' || action === 'editor-mode-advanced') { state.editorDraft = { ...state.editorDraft, ...readForm(root.querySelector('form[data-form=\"puzzle-editor\"]')), editorMode: action === 'editor-mode-advanced' ? 'advanced' : 'simple' }; return render(); }
+  if (action === 'load-template' || action === 'use-template') {
+    const templateKey = action === 'load-template'
+      ? (state.editorDraft?.type === 'lock' && state.editorDraft?.lockMode === 'deduction'
+        ? 'lock-dice'
+        : state.editorDraft?.type === 'lock' && state.editorDraft?.lockMode === 'wheel'
+          ? 'lock-wheel'
+          : (state.editorDraft?.type || 'lock'))
+      : (id || 'lock');
+    const templateDraft = getPuzzleTemplate(templateKey);
+    if (!templateDraft) return;
+    state.editorId = action === 'load-template' ? state.editorId : null;
+    state.editorDraft = { ...templateDraft, editorMode: state.editorDraft?.editorMode || 'simple', sequenceOrder: 1 };
+    state.tab = 'master';
+    state.notice = '';
+    return render();
+  }
+  if (action === 'release-hint') {
+    const puzzle = getPrivatePuzzle(id);
+    if (!puzzle) return setNotice('Este enigma não tem respostas privadas neste navegador.', 'warning');
+    const nextIndex = puzzle.public.revealedHints?.length || 0;
+    const nextHint = puzzle.hints?.[nextIndex];
+    if (!nextHint) return setNotice('Todas as dicas deste enigma já foram liberadas.', 'info');
+    puzzle.public.revealedHints = [...(puzzle.public.revealedHints || []), { index: nextIndex + 1, text: nextHint, at: Date.now() }];
+    puzzle.public.updatedAt = Date.now();
+    saveAndPublish();
+    return setNotice(`Dica ${nextIndex + 1} liberada para a sala.`, 'success');
+  }
   if (action === 'dismiss-notice') { state.notice = ''; return render(); }
   if (action === 'select-puzzle') {
     state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.cipherOffset = 0; state.notice = ''; return render();
   }
   if (action === 'new-puzzle') {
     state.editorId = null;
-    state.editorDraft = { type: 'lock', attemptLimit: 3, errorEffect: 'none', lockMode: 'keypad' };
+    state.editorDraft = { type: 'lock', attemptLimit: 0, errorEffect: 'none', lockMode: 'keypad', editorMode: 'simple', sequenceOrder: 1 };
     return render();
   }
   if (action === 'cancel-editor') { state.editorDraft = null; state.editorId = null; return render(); }
@@ -721,22 +818,31 @@ function onClick(event) {
     if (!confirm('Excluir este enigma e suas respostas privadas?')) return;
     state.privatePuzzles = state.privatePuzzles.filter((puzzle) => puzzle.id !== id);
     state.selectedPuzzleId = state.privatePuzzles[0]?.id || null;
+    recalculateSequenceLocks(state.privatePuzzles);
     saveAndPublish(); return setNotice('Enigma removido da sala.', 'success');
   }
   if (action === 'reset-puzzle') {
     const puzzle = getPrivatePuzzle(id);
     if (!puzzle) return;
-    puzzle.public.attemptsUsed = 0;
-    puzzle.public.consequenceCount = 0;
-    puzzle.public.clockCount = 0;
-    puzzle.public.alarmCount = 0;
-    puzzle.public.solved = false;
-    puzzle.public.locked = false;
-    puzzle.public.history = [];
-    puzzle.public.questionIndex = 0;
-    puzzle.public.solvedQuestionIds = [];
-    puzzle.public.reveal = null;
-    saveAndPublish(); return setNotice('Progresso do enigma reiniciado.', 'success');
+    const sequenceName = puzzle.public.sequenceName;
+    const targets = sequenceName
+      ? state.privatePuzzles.filter((item) => normalizeName(item.public.sequenceName) === normalizeName(sequenceName) && Number(item.public.sequenceOrder) >= Number(puzzle.public.sequenceOrder))
+      : [puzzle];
+    for (const target of targets) {
+      target.public.attemptsUsed = 0;
+      target.public.consequenceCount = 0;
+      target.public.clockCount = 0;
+      target.public.alarmCount = 0;
+      target.public.solved = false;
+      target.public.locked = false;
+      target.public.history = [];
+      target.public.questionIndex = 0;
+      target.public.solvedQuestionIds = [];
+      target.public.reveal = null;
+      target.public.revealedHints = [];
+    }
+    recalculateSequenceLocks(state.privatePuzzles);
+    saveAndPublish(); return setNotice(sequenceName ? `Etapa e etapas seguintes reiniciadas (${targets.length}).` : 'Progresso do enigma reiniciado.', 'success');
   }
   if (action === 'seed-demo') {
     const examples = createDemoPuzzles();
@@ -798,7 +904,7 @@ function onChange(event) {
 function exportBackup() {
   const data = {
     app: 'Dynamic Puzzles',
-    version: '0.2.0',
+    version: '0.3.0',
     exportedAt: new Date().toISOString(),
     roomHint: state.roomId,
     puzzles: state.privatePuzzles,
@@ -820,6 +926,14 @@ async function importBackup(file) {
     if (!Array.isArray(parsed.puzzles) || parsed.puzzles.length > MAX_PUZZLES) throw new Error('Arquivo inválido ou com muitos enigmas.');
     if (!confirm(`Importar ${parsed.puzzles.length} enigma(s)? Isso substituirá a biblioteca privada desta sala.`)) return;
     state.privatePuzzles = parsed.puzzles;
+    for (const puzzle of state.privatePuzzles) {
+      puzzle.hints ||= [];
+      puzzle.public.revealedHints ||= [];
+      puzzle.public.hintCount = puzzle.hints.length;
+      puzzle.public.sequenceName ||= '';
+      puzzle.public.sequenceOrder ||= 1;
+    }
+    recalculateSequenceLocks(state.privatePuzzles);
     state.selectedPuzzleId = state.privatePuzzles[0]?.id || null;
     await saveAndPublish();
     setNotice('Backup importado e publicado na sala.', 'success');

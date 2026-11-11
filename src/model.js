@@ -24,6 +24,76 @@ export const DEFAULT_WIRES = [
   { id: 'green', label: 'Verde', color: '#4ade80' },
 ];
 
+
+// Modelos de partida: cada tipo possui um exemplo pronto que pode ser editado.
+export const PUZZLE_TEMPLATES = [
+  {
+    id: 'lock', type: 'lock', label: 'Cadeado', difficulty: 'Fácil',
+    description: 'Código curto para uma porta, gaveta ou cofre.',
+    preview: 'TECLADO // _ _ _ _',
+    draft: { type: 'lock', title: 'Cofre do Arquivista', description: 'Um pequeno cofre protege o diário da expedição.', instructions: 'Uma anotação diz: “o ano em que a equipe desapareceu”.', lockMode: 'keypad', answer: '1847', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Diário recuperado', rewardContent: 'Entre as páginas há um mapa marcado em tinta azul.', hints: 'Observe a data citada na anotação.\nO ano aparece no registro da expedição.\nA combinação é 1847.' }
+  },
+  {
+    id: 'lock-wheel', type: 'lock', label: 'Cadeado com discos giratórios', difficulty: 'Fácil',
+    description: 'Alinhe os discos de combinação para liberar uma fechadura mecânica.',
+    preview: 'DISCOS // 5  ·  8  ·  2  ·  1',
+    draft: { type: 'lock', title: 'Cofre da Estação', description: 'Quatro discos metálicos formam o mecanismo de abertura.', instructions: 'Uma anotação antiga diz: “a ordem está gravada no verso do retrato”.', lockMode: 'wheel', answer: '5821', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Cofre destrancado', rewardContent: 'Dentro há uma fotografia com o nome de um antigo funcionário.', hints: 'Observe o retrato próximo ao cofre.\nO verso contém quatro números escritos à mão.\nA combinação é 5821.' }
+  },
+  {
+    id: 'lock-dice', type: 'lock', label: 'Destrancamento por dados', difficulty: 'Médio',
+    description: 'Descubra uma combinação rolada pelo mestre usando pistas de alto, baixo e exato.',
+    preview: '5 × D8  //  ?  ?  ?  ?  ?',
+    draft: { type: 'lock', title: 'Cofre de cinco discos', description: 'Cinco discos numerados protegem o compartimento interno.', instructions: 'O mecanismo responde se cada palpite está acima, abaixo ou exato.', lockMode: 'deduction', diceCount: 5, diceSides: 8, diceAnswer: '6, 2, 7, 3, 5', feedbackMode: 'individual', attemptLimit: 12, errorEffect: 'clock', rewardTitle: 'Compartimento aberto', rewardContent: 'Dentro há uma chave de ferro e um mapa dobrado.', hints: 'Comece procurando valores possíveis para cada posição.\nAlgumas posições já podem estar exatas.\nA combinação é 6, 2, 7, 3, 5.' }
+  },
+  {
+    id: 'terminal', type: 'terminal', label: 'Terminal', difficulty: 'Médio',
+    description: 'Autenticação e comandos em um computador fictício.',
+    preview: 'LOGIN: ______  /  SENHA: ______',
+    draft: { type: 'terminal', title: 'Terminal da Estação', description: 'Um terminal antigo aguarda autenticação.', instructions: 'O crachá encontrado indica o usuário administrativo.', terminalLabel: 'ESTAÇÃO // NÓ CENTRAL', username: 'admin', password: 'nebula', acceptedCommands: 'help\nopen vault', attemptLimit: 5, errorEffect: 'alarm', rewardTitle: 'Arquivo liberado', rewardContent: 'O terminal revela os registros da última transmissão.', hints: 'Procure o crachá de administrador.\nA senha está anotada no verso do crachá.\nA senha é nebula.' }
+  },
+  {
+    id: 'cipher', type: 'cipher', label: 'Cifra', difficulty: 'Médio',
+    description: 'Mensagem codificada que precisa ser decifrada.',
+    preview: 'FKDYH HVWD QR DUPDULR',
+    draft: { type: 'cipher', title: 'Mensagem interceptada', description: 'Uma mensagem foi cifrada antes de chegar ao grupo.', instructions: 'A cifra é de César. O deslocamento é +3.', cipherText: 'FKDYH HVWD QR DUPDULR', cipherMethod: 'caesar', shift: 3, answer: 'CHAVE ESTA NO ARMARIO', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Mensagem decifrada', rewardContent: 'A chave está no armário.', hints: 'Cada letra foi deslocada no alfabeto.\nExperimente voltar três posições.\nA mensagem diz: CHAVE ESTA NO ARMARIO.' }
+  },
+  {
+    id: 'sequence', type: 'sequence', label: 'Sequência de símbolos', difficulty: 'Médio',
+    description: 'Pressione símbolos na ordem correta.',
+    preview: '☾  →  ◆  →  ■  →  ✦',
+    draft: { type: 'sequence', title: 'Ritual dos quatro selos', description: 'Quatro símbolos cercam o altar.', instructions: 'A inscrição menciona noite, chama, pedra e estrela.', availableSymbols: '☾ ◆ ■ ✦ ● ▲', answerSequence: '☾ ◆ ■ ✦', attemptLimit: 3, errorEffect: 'clock', rewardTitle: 'Selo desfeito', rewardContent: 'A barreira mágica desaparece.', hints: 'A inscrição descreve quatro elementos.\nA noite vem antes da pedra.\nA ordem é Lua, Diamante, Quadrado e Estrela.' }
+  },
+  {
+    id: 'wires', type: 'wires', label: 'Fios coloridos', difficulty: 'Fácil',
+    description: 'Escolha qual cabo deve ser cortado ou isolado.',
+    preview: '● VERMELHO    ● AZUL    ● VERDE',
+    draft: { type: 'wires', title: 'Painel de energia', description: 'Três fios alimentam o mecanismo.', instructions: 'A etiqueta avisa: “o fio sem corrente está marcado pela corrosão”.', wireColors: 'Vermelho, Azul, Verde', correctWire: 'wire-2', attemptLimit: 1, errorEffect: 'alarm', rewardTitle: 'Painel desativado', rewardContent: 'O sistema perde energia.', hints: 'Observe o estado do isolamento.\nO fio verde está corroído.\nCorte o fio verde.' }
+  },
+  {
+    id: 'document', type: 'document', label: 'Documento rasgado', difficulty: 'Fácil',
+    description: 'Reorganize fragmentos para reconstruir uma mensagem.',
+    preview: '“Abaixo da terceira pedra…”',
+    draft: { type: 'document', title: 'Bilhete rasgado', description: 'Um bilhete foi dividido em quatro partes.', instructions: 'Organize os fragmentos para recuperar a instrução.', fragments: 'Abaixo da terceira pedra\nexiste uma pequena alavanca.\nPuxe-a somente depois\nde apagar as duas tochas.', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Bilhete restaurado', rewardContent: 'O bilhete indica uma passagem secreta sob o altar.', hints: 'Procure uma frase que comece indicando um lugar.\nA instrução termina com o que deve ser apagado.\nA ordem correta começa com “Abaixo da terceira pedra”.' }
+  },
+  {
+    id: 'switches', type: 'switches', label: 'Painel de interruptores', difficulty: 'Médio',
+    description: 'Acerte o estado ligado/desligado de cada chave.',
+    preview: '■ OFF   ■ ON   ■ OFF   ■ ON',
+    draft: { type: 'switches', title: 'Painel de contenção', description: 'Cinco interruptores controlam a trava.', instructions: 'As marcas na lateral indicam o padrão alternado.', switchPattern: '10110', attemptLimit: 4, errorEffect: 'clock', rewardTitle: 'Contenção liberada', rewardContent: 'A trava magnética se abre.', hints: 'O primeiro interruptor deve ficar ligado.\nO segundo fica desligado e o terceiro ligado.\nO padrão é 10110.' }
+  },
+  {
+    id: 'social', type: 'social', label: 'Hack Social', difficulty: 'Médio',
+    description: 'Use informações sobre uma pessoa para confirmar sua identidade.',
+    preview: 'VERIFICAÇÃO DE IDENTIDADE // 0 DE 3',
+    draft: { type: 'social', title: 'Perfil de acesso de Helena', description: 'O celular está protegido por perguntas baseadas na vida da proprietária.', instructions: 'Usem as pistas encontradas para responder sobre Helena.', socialMode: 'investigative', requiredAnswers: 2, socialQuestions: 'Qual é o nome do cachorro? | Thor | Thorinho;Trovão\nEm qual cidade ela nasceu? | Santos | Santos-SP\nQual instrumento ela tocava? | Violino |', attemptLimit: 6, errorEffect: 'alarm', rewardTitle: 'Celular desbloqueado', rewardContent: 'As mensagens privadas ficam disponíveis.', hints: 'Há uma fotografia com o animal de estimação.\nUma etiqueta de bagagem revela a cidade natal.\nO cachorro se chama Thor.' }
+  }
+];
+
+export function getPuzzleTemplate(typeOrId) {
+  const template = PUZZLE_TEMPLATES.find((item) => item.id === typeOrId) || PUZZLE_TEMPLATES.find((item) => item.type === typeOrId);
+  return template ? structuredClone(template.draft) : null;
+}
+
 export function normalize(value) {
   return String(value ?? '')
     .normalize('NFD')
@@ -47,6 +117,10 @@ export function makePuzzle(values, previous = null) {
     content: String(values.rewardContent || '').trim(),
     url: String(values.rewardUrl || '').trim().slice(0, 500),
   };
+  const hints = String(values.hints ?? (previous?.hints || []).join('\n'))
+    .split('\n').map((hint) => hint.trim()).filter(Boolean).slice(0, 5);
+  const sequenceName = String(values.sequenceName || '').trim().slice(0, 60);
+  const sequenceOrder = Math.max(1, Math.min(99, Number(values.sequenceOrder) || 1));
   const oldPublic = previous?.public || {};
   const oldSecret = previous?.secret || {};
   const type = values.type || previous?.type || 'lock';
@@ -177,6 +251,11 @@ export function makePuzzle(values, previous = null) {
     questionIndex: oldPublic.questionIndex || 0,
     solvedQuestionIds: oldPublic.solvedQuestionIds || [],
     reveal: oldPublic.reveal || null,
+    hintCount: hints.length,
+    revealedHints: oldPublic.revealedHints || [],
+    sequenceName,
+    sequenceOrder,
+    sequenceLocked: Boolean(oldPublic.sequenceLocked),
     updatedAt: Date.now(),
   };
 
@@ -190,9 +269,40 @@ export function makePuzzle(values, previous = null) {
     publicPuzzle.locked = false;
     publicPuzzle.history = [];
     publicPuzzle.reveal = null;
+    publicPuzzle.revealedHints = [];
+    publicPuzzle.sequenceLocked = false;
   }
 
-  return { id, type, title, secret: Object.keys(secret).length ? secret : oldSecret, reward, public: publicPuzzle };
+  return { id, type, title, secret: Object.keys(secret).length ? secret : oldSecret, reward, hints, public: publicPuzzle };
+}
+
+export function recalculateSequenceLocks(privatePuzzles) {
+  const groups = new Map();
+  for (const puzzle of privatePuzzles || []) {
+    if (!puzzle?.public) continue;
+    const name = String(puzzle.public.sequenceName || '').trim();
+    if (!name) {
+      puzzle.public.sequenceLocked = false;
+      continue;
+    }
+    const key = normalize(name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(puzzle);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => (Number(a.public.sequenceOrder) || 1) - (Number(b.public.sequenceOrder) || 1));
+    group.forEach((puzzle, index) => {
+      const order = Number(puzzle.public.sequenceOrder) || 1;
+      if (index === 0) {
+        puzzle.public.sequenceLocked = order !== 1;
+        return;
+      }
+      const previous = group[index - 1];
+      const previousOrder = Number(previous.public.sequenceOrder) || 1;
+      puzzle.public.sequenceLocked = previous.public.sequenceLocked || !previous.public.solved || order !== previousOrder + 1;
+    });
+  }
+  return privatePuzzles;
 }
 
 function colorForWire(label, index) {
@@ -218,7 +328,7 @@ function shuffle(items) {
 }
 
 export function evaluateAttempt(puzzle, payload) {
-  if (!puzzle || !payload || puzzle.public.solved || puzzle.public.locked) {
+  if (!puzzle || !payload || puzzle.public.solved || puzzle.public.locked || puzzle.public.sequenceLocked) {
     return { correct: false, solved: false, feedback: null };
   }
   const secret = puzzle.secret || {};

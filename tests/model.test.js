@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makePuzzle, validateAttempt, toPublicState, normalize, evaluateAttempt } from '../src/model.js';
+import { makePuzzle, validateAttempt, toPublicState, normalize, evaluateAttempt, recalculateSequenceLocks, PUZZLE_TEMPLATES, getPuzzleTemplate } from '../src/model.js';
 
 test('normaliza acentos, caixa e espaços para respostas textuais', () => {
   assert.equal(normalize('  AÇÃO   SECRETA  '), 'acao secreta');
@@ -146,4 +146,73 @@ test('combinação do cadeado por dados nunca entra no estado público', () => {
   const serialized = JSON.stringify(toPublicState([puzzle]));
   assert.doesNotMatch(serialized, /9,4,7/);
   assert.equal('combination' in toPublicState([puzzle]).puzzles[0].config, false);
+});
+
+
+test('biblioteca possui um modelo demonstrativo para cada tipo de enigma e uma variação por dados', () => {
+  const types = new Set(PUZZLE_TEMPLATES.map((template) => template.type));
+  for (const type of ['lock', 'terminal', 'cipher', 'sequence', 'wires', 'document', 'switches', 'social']) {
+    assert.equal(types.has(type), true, `faltou modelo para ${type}`);
+  }
+  assert.equal(PUZZLE_TEMPLATES.length, 10);
+  const wheelTemplate = getPuzzleTemplate('lock-wheel');
+  assert.equal(wheelTemplate.lockMode, 'wheel');
+  assert.equal(wheelTemplate.answer, '5821');
+  const diceTemplate = getPuzzleTemplate('lock-dice');
+  assert.equal(diceTemplate.lockMode, 'deduction');
+  assert.equal(diceTemplate.diceCount, 5);
+  assert.equal(diceTemplate.diceSides, 8);
+  diceTemplate.title = 'Alteração local';
+  assert.notEqual(getPuzzleTemplate('lock-dice').title, 'Alteração local');
+});
+
+test('dicas secretas só são publicadas depois que o mestre as libera', () => {
+  const puzzle = makePuzzle({
+    type: 'lock', answer: '1847', hints: 'Observe a data.\nConfira o diário.\nA senha é 1847.',
+  });
+  let publicData = JSON.stringify(toPublicState([puzzle]));
+  assert.doesNotMatch(publicData, /Observe a data|Confira o diário|A senha é 1847/);
+  assert.equal(toPublicState([puzzle]).puzzles[0].hintCount, 3);
+  puzzle.public.revealedHints = [{ index: 1, text: puzzle.hints[0], at: 123 }];
+  publicData = JSON.stringify(toPublicState([puzzle]));
+  assert.match(publicData, /Observe a data/);
+  assert.doesNotMatch(publicData, /Confira o diário|A senha é 1847/);
+});
+
+test('sequência de enigmas libera uma etapa somente quando a anterior é resolvida', () => {
+  const first = makePuzzle({ type: 'lock', title: 'Etapa 1', answer: '1111', sequenceName: 'Laboratório', sequenceOrder: 1 });
+  const second = makePuzzle({ type: 'lock', title: 'Etapa 2', answer: '2222', sequenceName: 'laboratorio', sequenceOrder: 2 });
+  const third = makePuzzle({ type: 'lock', title: 'Etapa 3', answer: '3333', sequenceName: 'Laboratório', sequenceOrder: 3 });
+  const group = [first, second, third];
+  recalculateSequenceLocks(group);
+  assert.equal(first.public.sequenceLocked, false);
+  assert.equal(second.public.sequenceLocked, true);
+  assert.equal(third.public.sequenceLocked, true);
+  assert.equal(evaluateAttempt(second, { value: '2222' }).solved, false);
+  first.public.solved = true;
+  recalculateSequenceLocks(group);
+  assert.equal(second.public.sequenceLocked, false);
+  assert.equal(third.public.sequenceLocked, true);
+  second.public.solved = true;
+  recalculateSequenceLocks(group);
+  assert.equal(third.public.sequenceLocked, false);
+});
+
+test('metadados públicos da sequência não contêm soluções privadas', () => {
+  const first = makePuzzle({ type: 'lock', title: 'Etapa 1', answer: 'senha-secreta', sequenceName: 'Arquivo', sequenceOrder: 1, hints: 'Dica reservada.' });
+  const second = makePuzzle({ type: 'social', title: 'Etapa 2', socialQuestions: 'Nome? | Helena | Lena', requiredAnswers: 1, sequenceName: 'Arquivo', sequenceOrder: 2 });
+  recalculateSequenceLocks([first, second]);
+  const publicData = JSON.stringify(toPublicState([first, second]));
+  assert.doesNotMatch(publicData, /senha-secreta|Dica reservada|Helena|Lena/);
+  assert.match(publicData, /Arquivo/);
+  assert.equal(toPublicState([first, second]).puzzles[1].sequenceLocked, true);
+});
+
+
+test('uma sequência com lacuna ou sem etapa 1 permanece bloqueada', () => {
+  const second = makePuzzle({ type: 'lock', title: 'Etapa 2', answer: '2222', sequenceName: 'Cofre', sequenceOrder: 2 });
+  const fourth = makePuzzle({ type: 'lock', title: 'Etapa 4', answer: '4444', sequenceName: 'Cofre', sequenceOrder: 4 });
+  recalculateSequenceLocks([second, fourth]);
+  assert.equal(second.public.sequenceLocked, true);
+  assert.equal(fourth.public.sequenceLocked, true);
 });
