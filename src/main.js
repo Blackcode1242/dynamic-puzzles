@@ -278,7 +278,11 @@ function recordAttempt(privatePuzzle, payload, actor, playerId = 'shared') {
   if (individual) {
     const individualHistory = [...(playerProgress.history || []), entry].slice(-15);
     storedPublic.playerProgress = { ...(storedPublic.playerProgress || {}), [playerId]: { attemptsUsed: publicPuzzle.attemptsUsed, consequenceCount: publicPuzzle.consequenceCount, clockCount: publicPuzzle.clockCount, alarmCount: publicPuzzle.alarmCount, solved: publicPuzzle.solved, locked: publicPuzzle.locked, questionIndex: publicPuzzle.questionIndex, solvedQuestionIds: publicPuzzle.solvedQuestionIds, history: individualHistory, updatedAt: Date.now() } };
-    storedPublic.attemptsUsed = Object.values(storedPublic.playerProgress).reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
+    const allProgress = Object.values(storedPublic.playerProgress);
+    storedPublic.attemptsUsed = allProgress.reduce((sum, item) => sum + (item.attemptsUsed || 0), 0);
+    storedPublic.consequenceCount = allProgress.reduce((sum, item) => sum + (item.consequenceCount || 0), 0);
+    storedPublic.clockCount = allProgress.reduce((sum, item) => sum + (item.clockCount || 0), 0);
+    storedPublic.alarmCount = allProgress.reduce((sum, item) => sum + (item.alarmCount || 0), 0);
     const participantIds = state.partyPlayers.filter((player) => player.role === 'PLAYER').map((player) => player.id);
     const everyoneFinished = participantIds.length > 0 && participantIds.every((id) => storedPublic.playerProgress[id]?.solved);
     if (everyoneFinished || (state.demoMode && solved)) {
