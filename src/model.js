@@ -147,7 +147,7 @@ export function makePuzzle(values, previous = null) {
     title: String(values.rewardTitle || '').trim(),
     content: String(values.rewardContent || '').trim(),
     url: String(values.rewardUrl || '').trim().slice(0, 500),
-  }};
+  };
   const hints = String(values.hints ?? (previous?.hints || []).join('\n'))
     .split('\n').map((hint) => hint.trim()).filter(Boolean).slice(0, 5);
   const sequenceName = String(values.sequenceName || '').trim().slice(0, 60);
