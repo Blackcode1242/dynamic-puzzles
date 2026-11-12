@@ -8,6 +8,7 @@ export const PUZZLE_TYPES = [
   { id: 'document', label: 'Documento rasgado', description: 'Reconstrua os fragmentos' },
   { id: 'switches', label: 'Painel de interruptores', description: 'Acerte a combinação de chaves' },
   { id: 'social', label: 'Hack Social', description: 'Descubra informações pessoais para acessar um sistema' },
+  { id: 'runes', label: 'Altar de Runas', description: 'Posicione e gire runas para reproduzir um padrão' },
 ];
 
 export const PARTICIPATION_MODES = [
@@ -128,6 +129,12 @@ export const PUZZLE_TEMPLATES = [
     description: 'Acerte o estado ligado/desligado de cada chave.',
     preview: '■ OFF   ■ ON   ■ OFF   ■ ON',
     draft: { type: 'switches', title: 'Painel de contenção', description: 'Cinco interruptores controlam a trava.', instructions: 'As marcas na lateral indicam o padrão alternado.', switchPattern: '10110', attemptLimit: 4, errorEffect: 'clock', rewardTitle: 'Contenção liberada', rewardContent: 'A trava magnética se abre.', hints: 'O primeiro interruptor deve ficar ligado.\nO segundo fica desligado e o terceiro ligado.\nO padrão é 10110.' }
+  },
+  {
+    id: 'runes', type: 'runes', label: 'Altar de Runas', difficulty: 'Médio',
+    description: 'Posicione e gire as runas para reconstruir o selo antigo.',
+    preview: 'ᚠ ᚢ ᚦ ᚨ  //  ALTAR 3×3',
+    draft: { type: 'runes', title: 'O selo do altar', description: 'Quatro runas cercam o núcleo de pedra.', instructions: 'Reproduza o selo indicado pelas inscrições nas paredes.', runeSymbols: 'ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ', runeGridSize: '3', runePattern: 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180\nᚨ | 9 | 270', attemptLimit: 0, errorEffect: 'none', rewardTitle: 'Selo ativado', rewardContent: 'O altar se abre, revelando uma passagem sob as pedras.', hints: 'Observe as marcas nas extremidades do altar.\nCada runa ocupa uma posição e uma orientação específicas.\nO selo usa quatro runas nos cantos e nas laterais.' }
   },
   {
     id: 'social', type: 'social', label: 'Hack Social', difficulty: 'Médio',
@@ -376,6 +383,30 @@ export function makePuzzle(values, previous = null) {
       .map((bit) => bit === '1');
     secret = { pattern };
     config = { switchCount: Math.max(2, pattern.length || 5) };
+  } else if (type === 'runes') {
+    const gridSize = Math.max(2, Math.min(5, Number(values.runeGridSize) || 3));
+    const symbols = [...new Set(String(values.runeSymbols || 'ᚠ ᚢ ᚦ ᚨ')
+      .split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 20);
+    if (symbols.length < 2) throw new Error('Adicione pelo menos duas runas disponíveis.');
+    const runes = symbols.map((symbol, index) => ({ id: `rune-${index}`, symbol }));
+    const placements = String(values.runePattern || '')
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      .map((line) => {
+        const [symbol = '', positionText = '', rotationText = '0'] = line.split('|').map((part) => part.trim());
+        const rune = runes.find((item) => item.symbol === symbol);
+        const position = Number(positionText);
+        const rotation = Number(rotationText);
+        if (!rune || !Number.isInteger(position) || position < 1 || position > gridSize * gridSize || ![0, 90, 180, 270].includes(rotation)) {
+          throw new Error('Cada linha do padrão deve usar uma runa disponível, uma posição válida e rotação 0, 90, 180 ou 270.');
+        }
+        return { runeId: rune.id, position: position - 1, rotation };
+      });
+    if (!placements.length) throw new Error('Defina pelo menos duas posições no padrão correto.');
+    if (placements.length < 2 || new Set(placements.map((item) => item.runeId)).size !== placements.length || new Set(placements.map((item) => item.position)).size !== placements.length) {
+      throw new Error('O padrão precisa ter pelo menos duas runas, sem repetir runas ou posições.');
+    }
+    secret = { placements };
+    config = { gridSize, runes };
   } else {
     throw new Error(`Tipo de enigma não reconhecido: ${type}`);
   }
@@ -705,6 +736,20 @@ export function evaluateAttempt(puzzle, payload) {
       return { correct, solved: correct, feedback: null };
     }
 
+    case 'runes': {
+      const expected = secret.placements || [];
+      const actual = Array.isArray(payload.placements) ? payload.placements : [];
+      const normalized = actual.map((item) => ({ runeId: String(item?.runeId || ''), position: Number(item?.position), rotation: Number(item?.rotation) }));
+      const valid = normalized.length === expected.length
+        && normalized.every((item) => puzzle.public.config.runes.some((rune) => rune.id === item.runeId)
+          && Number.isInteger(item.position) && item.position >= 0 && item.position < puzzle.public.config.gridSize ** 2
+          && [0, 90, 180, 270].includes(item.rotation))
+        && new Set(normalized.map((item) => item.runeId)).size === normalized.length
+        && new Set(normalized.map((item) => item.position)).size === normalized.length;
+      const correct = valid && expected.every((target) => normalized.some((item) => item.runeId === target.runeId && item.position === target.position && item.rotation === target.rotation));
+      return { correct, solved: correct, feedback: { text: correct ? 'As runas ressoam em uníssono. O selo foi reproduzido.' : 'O padrão ainda não corresponde ao selo. Revise as posições e rotações.' } };
+    }
+
     default:
       return { correct: false, solved: false, feedback: null };
   }
@@ -768,6 +813,9 @@ export function attemptLabel(puzzle, payload) {
 
     case 'switches':
       return `Painel: ${(payload.value || []).map((bit) => bit ? '1' : '0').join('')}`;
+
+    case 'runes':
+      return `Altar: ${(payload.placements || []).length} runas posicionadas`;
 
     default:
       return String(payload.value || '').slice(0, 100) || 'Tentativa enviada';
@@ -863,6 +911,13 @@ export function createDemoPuzzles() {
       type: 'switches', title: 'Painel de contenção', description: 'A sequência de interruptores precisa corresponder ao padrão.',
       instructions: 'Procure as marcas quase apagadas na lateral do painel.', switchPattern: '10110',
       attemptLimit: '3', errorEffect: 'lockdown', rewardTitle: 'Contenção liberada', rewardContent: 'A trava magnética se abre com um ruído grave.'
+    }),
+    makePuzzle({
+      type: 'runes', title: 'O selo do altar', description: 'Quatro runas precisam ser posicionadas sobre a pedra antiga.',
+      instructions: 'Reproduza o desenho indicado pelas inscrições ao redor do altar.',
+      runeSymbols: 'ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ', runeGridSize: '3',
+      runePattern: 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180\nᚨ | 9 | 270',
+      attemptLimit: '0', errorEffect: 'none', rewardTitle: 'Selo ativado', rewardContent: 'Uma passagem se abre sob o altar.'
     }),
   ];
   return examples;

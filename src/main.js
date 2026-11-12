@@ -52,6 +52,9 @@ const state = {
   playerNameDraft: '',
   cipherOffset: 0,
   draggedFragmentId: null,
+  runePlacements: [],
+  selectedRuneId: null,
+  draggedRuneId: null,
 };
 
 function escapeHtml(value) {
@@ -122,6 +125,8 @@ function setPublicState(publicState) {
   state.selectedWireId = null;
   state.fragmentOrder = [];
   state.switches = [];
+  state.runePlacements = [];
+  state.selectedRuneId = null;
   render();
 }
 
@@ -492,6 +497,7 @@ function renderPlayerControls(puzzle) {
     case 'document': return renderDocument(puzzle);
     case 'switches': return renderSwitches(puzzle);
     case 'social': return renderSocial(puzzle);
+    case 'runes': return renderRunes(puzzle);
     default: return '<p class="muted">Tipo de enigma não suportado.</p>';
   }
 }
@@ -577,6 +583,23 @@ function renderDocument(puzzle) {
   const order = state.fragmentOrder.length ? state.fragmentOrder : fragments.map((fragment) => fragment.id);
   const lookup = new Map(fragments.map((fragment) => [fragment.id, fragment]));
   return `<div class="document-game"><div class="document-heading"><span class="field-label">REMONTE O DOCUMENTO</span><span class="document-hint">Use ↑ e ↓ para reorganizar</span></div><div class="fragment-stack">${order.map((id, index) => { const fragment = lookup.get(id); return `<div class="fragment-row" draggable="true" data-fragment-row data-fragment-id="${escapeHtml(id)}"><span class="fragment-grip">⠿</span><span class="fragment-index">${String(index + 1).padStart(2, '0')}</span><span class="fragment-text">${escapeHtml(fragment?.text || '')}</span><div class="fragment-actions"><button type="button" aria-label="Mover para cima" data-action="move-fragment" data-index="${index}" data-direction="-1" ${index === 0 ? 'disabled' : ''}>↑</button><button type="button" aria-label="Mover para baixo" data-action="move-fragment" data-index="${index}" data-direction="1" ${index === order.length - 1 ? 'disabled' : ''}>↓</button></div></div>`; }).join('')}</div><button class="button button-primary button-wide" type="button" data-action="submit-document">Confirmar documento <span>→</span></button></div>`;
+}
+
+function renderRunes(puzzle) {
+  const size = Number(puzzle.config.gridSize || 3);
+  const runes = puzzle.config.runes || [];
+  const placements = state.runePlacements;
+  const used = new Set(placements.map((item) => item.runeId));
+  const occupied = new Map(placements.map((item) => [item.position, item]));
+  const cells = Array.from({ length: size * size }, (_, position) => {
+    const placed = occupied.get(position);
+    const rune = runes.find((item) => item.id === placed?.runeId);
+    return `<div class="rune-cell-wrap"><button type="button" class="rune-cell ${placed ? 'occupied' : ''} ${state.selectedRuneId && !placed ? 'target' : ''}" data-action="place-rune" data-position="${position}" data-rune-cell data-position-id="${position}" aria-label="Posição ${position + 1}" ${placed ? 'draggable="true"' : ''}>${placed ? `<span class="rune-glyph" style="transform:rotate(${placed.rotation}deg)">${escapeHtml(rune?.symbol || '?')}</span><small>${String(placed.rotation).padStart(3, '0')}°</small>` : `<span class="rune-empty">${String(position + 1).padStart(2, '0')}</span>`}</button>${placed ? `<div class="rune-cell-tools"><button type="button" data-action="rotate-rune" data-position="${position}" aria-label="Girar runa">↻</button><button type="button" data-action="remove-rune" data-position="${position}" aria-label="Retirar runa">×</button></div>` : ''}</div>`;
+  }).join('');
+  return `<div class="rune-game"><div class="rune-board-wrap"><div class="rune-board" style="--rune-grid-size:${size}">${cells}</div></div>
+    <div class="rune-tray"><span class="field-label">RUNAS DISPONÍVEIS · ARRASTE OU SELECIONE</span><div class="rune-tray-items">${runes.map((rune) => `<button type="button" class="rune-token ${used.has(rune.id) ? 'used' : ''} ${state.selectedRuneId === rune.id ? 'selected' : ''}" data-action="select-rune" data-id="${escapeHtml(rune.id)}" data-rune-token draggable="${!used.has(rune.id)}" ${used.has(rune.id) ? 'disabled' : ''}>${escapeHtml(rune.symbol)}</button>`).join('')}</div></div>
+    <p class="field-help">Arraste uma runa até uma casa vazia ou selecione-a e toque na posição. Use os controles para girar ou retirar cada peça.</p>
+    <div class="rune-actions"><button class="button button-quiet" type="button" data-action="clear-runes">Limpar altar</button><button class="button button-primary" type="button" data-action="submit-runes" ${placements.length < 2 ? 'disabled' : ''}>Ativar o altar <span>→</span></button></div></div>`;
 }
 
 function renderSwitches(puzzle) {
@@ -714,7 +737,7 @@ function renderTypeFields(type, draft, advanced = false) {
 
   if (type === 'frequency') {
     const useAmplitude = draft.frequencyUseAmplitude === 'yes' || draft.frequencyUseAmplitude === true;
-    const channels = String(draft.frequencyChannels || 'AM, FM, Emergência').split(/[\\n,;]+/).map((v)=>v.trim()).filter(Boolean);
+    const channels = String(draft.frequencyChannels || 'AM, FM, Emergência').split(/[\n,;]+/).map((v)=>v.trim()).filter(Boolean);
     const extra = advanced ? `
       ${input('frequencyTolerance','Tolerância da frequência (MHz)',draft.frequencyTolerance??0.5,'0.5','number')}
       <label class="form-field"><span>Interferência</span><select name="frequencyInterference">
@@ -745,7 +768,7 @@ function renderTypeFields(type, draft, advanced = false) {
     const questionCount = String(draft.socialQuestions || '').split(/\r?\n/).filter((line) => line.trim()).length;
     return `<label class="form-field"><span>Modo de investigação</span><select name="socialMode" data-editor-social-mode><option value="sequential" ${(draft.socialMode || 'sequential') === 'sequential' ? 'selected' : ''}>Sequencial · uma pergunta após a outra</option><option value="investigative" ${draft.socialMode === 'investigative' ? 'selected' : ''}>Investigativo · escolher perguntas em qualquer ordem</option></select></label><label class="form-field"><span>Perguntas e respostas (uma por linha)</span><textarea name="socialQuestions" rows="6" placeholder="Qual o nome do cachorro? | Thor&#10;Em que cidade nasceu? | Santos">${escapeHtml(draft.socialQuestions || '')}</textarea><small>${advanced ? 'Formato: pergunta | resposta correta | variações aceitas. As variações são opcionais e separadas por ponto e vírgula.' : 'Formato simples: pergunta | resposta. A quantidade de respostas definida no modelo é mantida; para alterá-la, use o modo avançado.'}</small></label>${advanced ? `<label class="form-field"><span>Quantas respostas corretas liberam o acesso?</span><input name="requiredAnswers" type="number" min="1" max="20" value="${escapeHtml(draft.requiredAnswers ?? questionCount ?? 1)}" /></label>` : `<input type="hidden" name="requiredAnswers" value="${escapeHtml(Math.min(Number(draft.requiredAnswers) || questionCount || 1, questionCount || 1))}" />`}<p class="field-help">As perguntas são públicas; as respostas e variações permanecem privadas.</p>`;
   }
-  if (type === 'terminal') return `${input('username', 'Usuário correto', draft.username, 'Ex.: admin')}${input('password', 'Senha correta', draft.password, 'Senha de acesso', 'text')}${advanced ? `${input('terminalLabel', 'Identificação do terminal', draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}${textarea('acceptedCommands', 'Comandos aceitos (um por linha)', draft.acceptedCommands, 'help\\nopen vault\\noverride')}` : `<input type="hidden" name="terminalLabel" value="${escapeHtml(draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}" /><textarea name="acceptedCommands" hidden>${escapeHtml(draft.acceptedCommands || '')}</textarea>`}<p class="field-help">O terminal aceita o login correto ou qualquer comando previamente cadastrado.</p>`;
+  if (type === 'terminal') return `${input('username', 'Usuário correto', draft.username, 'Ex.: admin')}${input('password', 'Senha correta', draft.password, 'Senha de acesso', 'text')}${advanced ? `${input('terminalLabel', 'Identificação do terminal', draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}${textarea('acceptedCommands', 'Comandos aceitos (um por linha)', draft.acceptedCommands, 'help\nopen vault\noverride')}` : `<input type="hidden" name="terminalLabel" value="${escapeHtml(draft.terminalLabel || 'TERMINAL // ACESSO RESTRITO')}" /><textarea name="acceptedCommands" hidden>${escapeHtml(draft.acceptedCommands || '')}</textarea>`}<p class="field-help">O terminal aceita o login correto ou qualquer comando previamente cadastrado.</p>`;
   if (type === 'cipher') return `${textarea('cipherText', 'Texto cifrado', draft.cipherText, 'Ex.: FKR UD QXEV')}${input('answer', 'Texto original / resposta', draft.answer, 'A mensagem decifrada')}${advanced ? `<div class="form-two-columns"><label class="form-field"><span>Tipo de cifra</span><select name="cipherMethod"><option value="caesar" ${(draft.cipherMethod || 'caesar') === 'caesar' ? 'selected' : ''}>César</option><option value="substitution" ${draft.cipherMethod === 'substitution' ? 'selected' : ''}>Substituição</option><option value="wheel" ${draft.cipherMethod === 'wheel' ? 'selected' : ''}>Roda de cifras</option></select></label>${input('shift', 'Deslocamento (César)', draft.shift ?? 3, '3', 'number')}</div>` : `<input type="hidden" name="cipherMethod" value="${escapeHtml(draft.cipherMethod || 'caesar')}" /><input type="hidden" name="shift" value="${escapeHtml(draft.shift ?? 3)}" />`}<p class="field-help">A validação compara a mensagem enviada com a resposta configurada.</p>`;
   if (type === 'sequence') return `${input('availableSymbols', 'Símbolos disponíveis', draft.availableSymbols || DEFAULT_SYMBOLS.join(' '), '◆ ● ▲ ■ ✦')}${input('answerSequence', 'Sequência correta (separada por espaço)', draft.answerSequence, '◆ ▲ ● ■')}<p class="field-help">Os símbolos disponíveis aparecem como botões. A ordem correta permanece privada.</p>`;
   if (type === 'wires') {
@@ -754,8 +777,12 @@ function renderTypeFields(type, draft, advanced = false) {
     const correct = draft.correctWire || 'wire-0';
     return `${textarea('wireColors', 'Fios disponíveis (separados por vírgula)', colors, 'Vermelho, Azul, Amarelo, Verde')}<label class="form-field"><span>Fio correto</span><select name="correctWire">${labels.map((label, index) => `<option value="wire-${index}" ${correct === `wire-${index}` ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label><p class="field-help">O jogador vê todos os fios e escolhe um para cortar. A cor correta fica privada.</p>`;
   }
-  if (type === 'document') return `${textarea('fragments', 'Fragmentos na ordem correta (um por linha)', draft.fragments, 'Primeiro trecho…\\nSegundo trecho…\\nTerceiro trecho…')}<p class="field-help">Os fragmentos são embaralhados na sala. Os jogadores precisam reorganizá-los antes de confirmar.</p>`;
+  if (type === 'document') return `${textarea('fragments', 'Fragmentos na ordem correta (um por linha)', draft.fragments, 'Primeiro trecho…\nSegundo trecho…\nTerceiro trecho…')}<p class="field-help">Os fragmentos são embaralhados na sala. Os jogadores precisam reorganizá-los antes de confirmar.</p>`;
   if (type === 'switches') return `${input('switchPattern', 'Combinação correta (0 = desligado, 1 = ligado)', draft.switchPattern || '10110', '10110')}<p class="field-help">Use de 2 a 10 posições. A combinação correta nunca é enviada ao painel público.</p>`;
+  if (type === 'runes') return `${input('runeSymbols', 'Runas disponíveis (separadas por espaço)', draft.runeSymbols || 'ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ', 'ᚠ ᚢ ᚦ ᚨ ᚱ ᚲ')}
+    <label class="form-field"><span>Dimensão do altar</span><select name="runeGridSize">${[2,3,4,5].map((size) => `<option value="${size}" ${Number(draft.runeGridSize || 3) === size ? 'selected' : ''}>${size} × ${size}</option>`).join('')}</select></label>
+    ${textarea('runePattern', 'Padrão correto (uma runa por linha)', draft.runePattern || 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180\nᚨ | 9 | 270', 'ᚠ | 1 | 0\nᚢ | 3 | 90')}
+    <p class="field-help">Formato: símbolo | posição | rotação. As posições são numeradas da esquerda para a direita, de cima para baixo. Rotação: 0, 90, 180 ou 270 graus. O padrão secreto não é publicado.</p>`;
   return '<p class="field-help">Selecione um tipo de interação.</p>';
 }
 
@@ -816,6 +843,7 @@ function draftFromPrivate(puzzle) {
     Object.assign(draft, { fragments: puzzle.secret.order.map((id) => fragments.get(id) || '').join('\n') });
   }
   if (puzzle.type === 'switches') Object.assign(draft, { switchPattern: puzzle.secret.pattern.map((bit) => bit ? '1' : '0').join('') });
+  if (puzzle.type === 'runes') Object.assign(draft, { runeSymbols: puzzle.public.config.runes.map((rune) => rune.symbol).join(' '), runeGridSize: puzzle.public.config.gridSize, runePattern: puzzle.secret.placements.map((item) => `${puzzle.public.config.runes.find((rune) => rune.id === item.runeId)?.symbol || ''} | ${item.position + 1} | ${item.rotation}`).join('\n') });
   return draft;
 }
 
@@ -834,7 +862,7 @@ function validateEditor(values) {
   }
   if (values.type === 'frequency') {
     const min=Number(values.frequencyMin), max=Number(values.frequencyMax), step=Number(values.frequencyStep), target=Number(values.frequencyTarget), tol=Number(values.frequencyTolerance??0.5);
-    const channels=String(values.frequencyChannels||'').split(/[\\n,;]+/).map(v=>v.trim()).filter(Boolean);
+    const channels=String(values.frequencyChannels||'').split(/[\n,;]+/).map(v=>v.trim()).filter(Boolean);
     if (![min,max,step,target,tol].every(Number.isFinite)) return 'Preencha os valores de frequência com números válidos.';
     if (max<=min || step<=0 || step>max-min) return 'A faixa ou o intervalo de sintonia é inválido.';
     if (target<min || target>max) return 'A frequência secreta precisa estar dentro da faixa configurada.';
@@ -859,6 +887,16 @@ function validateEditor(values) {
   if (values.type === 'wires' && !values.wireColors?.trim()) return 'Informe ao menos um fio.';
   if (values.type === 'document' && values.fragments?.split('\n').filter((part) => part.trim()).length < 2) return 'O documento precisa de pelo menos dois fragmentos.';
   if (values.type === 'switches' && values.switchPattern?.replace(/[^01]/g, '').length < 2) return 'O painel precisa de pelo menos dois interruptores.';
+  if (values.type === 'runes') {
+    const symbols = [...new Set(String(values.runeSymbols || '').split(/[\s,;]+/).filter(Boolean))];
+    const size = Number(values.runeGridSize || 3);
+    const rows = String(values.runePattern || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => line.split('|').map((part) => part.trim()));
+    if (symbols.length < 2) return 'Adicione pelo menos duas runas disponíveis.';
+    if (!Number.isInteger(size) || size < 2 || size > 5) return 'O altar deve ter entre 2×2 e 5×5 posições.';
+    if (rows.length < 2) return 'Defina pelo menos duas runas no padrão correto.';
+    const positions = rows.map((row) => Number(row[1]));
+    if (rows.some((row) => !symbols.includes(row[0]) || !Number.isInteger(Number(row[1])) || Number(row[1]) < 1 || Number(row[1]) > size * size || ![0,90,180,270].includes(Number(row[2] || 0))) || new Set(rows.map((row) => row[0])).size !== rows.length || new Set(positions).size !== rows.length) return 'Revise o padrão: runa | posição | rotação (0, 90, 180 ou 270), sem repetir runas ou posições.';
+  }
   if (String(values.hints || '').split('\n').filter((item) => item.trim()).length > 5) return 'Configure no máximo cinco dicas graduais.';
   if (String(values.sequenceName || '').trim()) {
     const order = Number(values.sequenceOrder || 1);
@@ -977,7 +1015,7 @@ function onClick(event) {
   }
   if (action === 'dismiss-notice') { state.notice = ''; return render(); }
   if (action === 'select-puzzle') {
-    state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.cipherOffset = 0; state.notice = ''; return render();
+    state.selectedPuzzleId = id; state.sequence = []; state.selectedWireId = null; state.fragmentOrder = []; state.switches = []; state.runePlacements = []; state.selectedRuneId = null; state.cipherOffset = 0; state.notice = ''; return render();
   }
   if (action === 'new-puzzle') {
     state.editorId = null;
@@ -1062,6 +1100,12 @@ function onClick(event) {
     return render();
   }
   if (action === 'submit-switches') { const value = [...state.switches]; return submitPayload({ value }); }
+  if (action === 'select-rune') { state.selectedRuneId = id; return render(); }
+  if (action === 'place-rune') { const position = Number(button.dataset.position); const existing = state.runePlacements.find((item) => item.position === position); if (existing) { state.selectedRuneId = existing.runeId; return render(); } if (!state.selectedRuneId) return; state.runePlacements = [...state.runePlacements.filter((item) => item.runeId !== state.selectedRuneId), { runeId: state.selectedRuneId, position, rotation: 0 }]; state.selectedRuneId = null; if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'posicionando runas no altar'); return render(); }
+  if (action === 'rotate-rune') { const item = state.runePlacements.find((rune) => rune.position === Number(button.dataset.position)); if (item) item.rotation = (item.rotation + 90) % 360; return render(); }
+  if (action === 'remove-rune') { state.runePlacements = state.runePlacements.filter((item) => item.position !== Number(button.dataset.position)); return render(); }
+  if (action === 'clear-runes') { state.runePlacements = []; state.selectedRuneId = null; return render(); }
+  if (action === 'submit-runes') { const placements = state.runePlacements.map((item) => ({ ...item })); return submitPayload({ placements }); }
   if (action === 'export-backup') return exportBackup();
 }
 
@@ -1142,6 +1186,10 @@ root.addEventListener('submit', onSubmit);
 root.addEventListener('change', onChange);
 root.addEventListener('input', onInput);
 root.addEventListener('dragstart', (event) => {
+  const runeToken = event.target.closest('[data-rune-token]');
+  const runeCell = event.target.closest('[data-rune-cell].occupied');
+  if (runeToken) { state.draggedRuneId = runeToken.dataset.id; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.draggedRuneId); return; }
+  if (runeCell) { state.draggedRuneId = state.runePlacements.find((item) => item.position === Number(runeCell.dataset.positionId))?.runeId || null; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.draggedRuneId || ''); return; }
   const row = event.target.closest('[data-fragment-row]');
   if (!row) return;
   state.draggedFragmentId = row.dataset.fragmentId;
@@ -1149,9 +1197,11 @@ root.addEventListener('dragstart', (event) => {
   event.dataTransfer.setData('text/plain', state.draggedFragmentId);
 });
 root.addEventListener('dragover', (event) => {
-  if (event.target.closest('[data-fragment-row]')) event.preventDefault();
+  if (event.target.closest('[data-fragment-row], [data-rune-cell]')) event.preventDefault();
 });
 root.addEventListener('drop', (event) => {
+  const runeTarget = event.target.closest('[data-rune-cell]');
+  if (runeTarget) { event.preventDefault(); const runeId = state.draggedRuneId || event.dataTransfer.getData('text/plain'); const position = Number(runeTarget.dataset.positionId); const occupied = state.runePlacements.find((item) => item.position === position); const moving = state.runePlacements.find((item) => item.runeId === runeId); if (runeId && (!occupied || occupied.runeId === runeId)) { state.runePlacements = [...state.runePlacements.filter((item) => item.runeId !== runeId), { runeId, position, rotation: moving?.rotation || 0 }]; if (state.connected && state.role === 'PLAYER') sendActivity(getSelectedPuzzle()?.id, 'movendo runas no altar'); render(); } state.draggedRuneId = null; return; }
   const targetRow = event.target.closest('[data-fragment-row]');
   const sourceId = state.draggedFragmentId || event.dataTransfer.getData('text/plain');
   if (!targetRow || !sourceId || sourceId === targetRow.dataset.fragmentId) return;

@@ -423,11 +423,11 @@ function attemptLabelForTest(puzzle, payload) {
 test('biblioteca possui um modelo demonstrativo para cada tipo de enigma e variações de cadeado', () => {
   const types = new Set(PUZZLE_TEMPLATES.map((template) => template.type));
 
-  for (const type of ['lock', 'terminal', 'cipher', 'frequency', 'sequence', 'wires', 'document', 'switches', 'social']) {
+  for (const type of ['lock', 'terminal', 'cipher', 'frequency', 'sequence', 'wires', 'document', 'switches', 'social', 'runes']) {
     assert.equal(types.has(type), true, `faltou modelo para ${type}`);
   }
 
-  assert.equal(PUZZLE_TEMPLATES.length, 11);
+  assert.equal(PUZZLE_TEMPLATES.length, 12);
 
   const wheelTemplate = getPuzzleTemplate('lock-wheel');
   assert.equal(wheelTemplate.lockMode, 'wheel');
@@ -564,4 +564,70 @@ test('trocar de modo não carrega o progresso individual para modo compartilhado
   individual.public.playerProgress = { 'player-1': { attemptsUsed: 3 } };
   const shared = makePuzzle({ type: 'lock', title: 'Teste', answer: '1234', participationMode: 'shared' }, individual);
   assert.deepEqual(shared.public.playerProgress, {});
+});
+
+
+test('Altar de Runas configura símbolos, posições e rotações sem publicar o padrão secreto', () => {
+  const puzzle = makePuzzle({
+    type: 'runes',
+    runeSymbols: 'ᚠ ᚢ ᚦ ᚨ ᚱ',
+    runeGridSize: '3',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 3 | 90\nᚦ | 7 | 180',
+  });
+  assert.equal(puzzle.public.config.gridSize, 3);
+  assert.equal(puzzle.public.config.runes.length, 5);
+  assert.deepEqual(puzzle.secret.placements, [
+    { runeId: 'rune-0', position: 0, rotation: 0 },
+    { runeId: 'rune-1', position: 2, rotation: 90 },
+    { runeId: 'rune-2', position: 6, rotation: 180 },
+  ]);
+  const serialized = JSON.stringify(toPublicState([puzzle]));
+  assert.doesNotMatch(serialized, /placements|runePattern/);
+  assert.match(serialized, /ᚠ/);
+});
+
+test('Altar de Runas exige correspondência exata de símbolo, posição e rotação', () => {
+  const puzzle = makePuzzle({
+    type: 'runes',
+    runeSymbols: 'ᚠ ᚢ ᚦ',
+    runeGridSize: '2',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 4 | 270',
+  });
+  assert.equal(evaluateAttempt(puzzle, { placements: [
+    { runeId: 'rune-0', position: 0, rotation: 0 },
+    { runeId: 'rune-1', position: 3, rotation: 270 },
+  ] }).solved, true);
+  assert.equal(evaluateAttempt(puzzle, { placements: [
+    { runeId: 'rune-0', position: 0, rotation: 90 },
+    { runeId: 'rune-1', position: 3, rotation: 270 },
+  ] }).solved, false);
+  assert.equal(evaluateAttempt(puzzle, { placements: [
+    { runeId: 'rune-0', position: 0, rotation: 0 },
+    { runeId: 'rune-1', position: 2, rotation: 270 },
+  ] }).solved, false);
+});
+
+test('Altar de Runas rejeita posições duplicadas, runas duplicadas e valores inválidos', () => {
+  const puzzle = makePuzzle({
+    type: 'runes',
+    runeSymbols: 'ᚠ ᚢ ᚦ',
+    runeGridSize: '2',
+    runePattern: 'ᚠ | 1 | 0\nᚢ | 4 | 90',
+  });
+  const invalid = evaluateAttempt(puzzle, { placements: [
+    { runeId: 'rune-0', position: 0, rotation: 0 },
+    { runeId: 'rune-0', position: 3, rotation: 90 },
+  ] });
+  assert.equal(invalid.solved, false);
+  assert.equal(evaluateAttempt(puzzle, { placements: [
+    { runeId: 'rune-0', position: 0, rotation: 45 },
+    { runeId: 'rune-1', position: 3, rotation: 90 },
+  ] }).solved, false);
+});
+
+test('biblioteca inclui demonstração do Altar de Runas', () => {
+  const template = getPuzzleTemplate('runes');
+  assert.equal(template.type, 'runes');
+  assert.match(template.runePattern, /ᚠ/);
+  assert.equal(createDemoPuzzles().some((puzzle) => puzzle.type === 'runes'), true);
 });

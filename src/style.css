@@ -502,3 +502,26 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .multiplayer-activity .live-indicator {
   flex: 0 0 7px;
 }
+
+
+/* Altar de Runas */
+.rune-game { max-width: 680px; margin: 0 auto; padding-top: 8px; }
+.rune-board-wrap { display:flex; justify-content:center; padding:18px; border:1px solid rgba(196,164,112,.2); border-radius:12px; background:radial-gradient(circle,rgba(178,133,76,.10),rgba(10,13,19,.38) 72%); }
+.rune-board { width:min(100%,430px); display:grid; grid-template-columns:repeat(var(--rune-grid-size),minmax(0,1fr)); gap:9px; padding:10px; border:1px solid rgba(205,169,113,.32); border-radius:9px; background:linear-gradient(145deg,#25221e,#11151c 65%); box-shadow:inset 0 0 35px rgba(0,0,0,.55),0 12px 35px rgba(0,0,0,.2); }
+.rune-cell-wrap { position:relative; min-width:0; aspect-ratio:1; }
+.rune-cell { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; border:1px dashed rgba(193,160,111,.23); border-radius:7px; color:#927e60; background:rgba(7,10,15,.42); transition:.15s; }
+.rune-cell.target { border-color:rgba(196,164,112,.65); background:rgba(178,133,76,.10); }
+.rune-cell.occupied { border:1px solid rgba(207,174,121,.55); color:#f0d8a8; background:linear-gradient(145deg,rgba(142,105,54,.28),rgba(39,34,29,.9)); cursor:grab; }
+.rune-glyph { display:block; color:#e8d1a3; font:clamp(23px,5vw,38px) Georgia,serif; text-shadow:0 0 14px rgba(216,175,107,.25); transition:transform .2s; }
+.rune-cell small { color:#a99778; font:8px var(--mono); }
+.rune-empty { font:9px var(--mono); opacity:.55; }
+.rune-cell-tools { position:absolute; z-index:2; right:3px; top:3px; display:flex; gap:3px; }
+.rune-cell-tools button { width:21px; height:21px; padding:0; border:1px solid rgba(215,184,137,.25); border-radius:5px; color:#e4cfaa; background:#171a20; font-size:13px; line-height:1; }
+.rune-tray { margin-top:17px; padding:12px; border:1px solid var(--line); border-radius:8px; background:rgba(7,10,15,.25); }
+.rune-tray-items { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.rune-token { width:43px; height:43px; border:1px solid rgba(196,164,112,.35); border-radius:8px; color:#ead6b2; background:rgba(155,116,61,.13); font:25px Georgia,serif; cursor:grab; }
+.rune-token.selected { border-color:#e7c58e; background:rgba(195,151,86,.3); box-shadow:0 0 15px rgba(195,151,86,.18); }
+.rune-token.used { opacity:.25; cursor:default; }
+.rune-actions { display:flex; gap:8px; margin-top:12px; }
+.rune-actions .button { flex:1; }
+@media(max-width:560px) { .rune-board { gap:5px; padding:6px; } .rune-cell-tools button { width:18px; height:18px; } .rune-board-wrap { padding:9px; } }
